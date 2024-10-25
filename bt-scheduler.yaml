@@ -1,0 +1,88 @@
+blueprint:
+  name: Better Thermostat Scheduler
+  domain: automation
+  author: Thomas Dickinson
+  description: |-
+    Switches Better Thermostat between its comfort temperature and a set-back eco temperature, based on persons' presence and a schedule. 
+
+    Restores the Better Thermostat's comfort temperature when:
+    * the schedule is on, and
+    * at least one person is at home.
+
+    Sets a configured set-back eco temperature when:
+    * the schedule is off, or
+    * all the persons are not at home.
+
+    Version 1.0, 24/10/2024
+  source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-scheduler.yaml
+
+  input:
+    target_bt:
+      name: Better Thermostats
+      description: Which Better Thermostat is to be controlled (climate, only Better Thermostat devices can be selected here)
+      selector:
+        target:
+          device:
+            integration: better_thermostat
+          entity:
+            integration: better_thermostat
+            domain: climate
+
+    target_temperature:
+      name: Set-back eco temperature
+      description: The eco temperature to set when the person is absent or the schedule is off.
+      default: 17
+      selector:
+        number:
+          min: 5
+          max: 35
+          unit_of_measurement: °C
+
+    schedule_for_bt_on:
+      name: Schedule
+      description: Schedule for when the Better Thermostat should use its set comfort temperature.
+      selector:
+        entity:
+          domain: schedule
+
+    monitor_person:
+      name: Persons
+      description: The person(s) to monitor for presence at home. When all are not home, the set-back temperature will be set.
+      selector:
+        entity:
+          domain: person
+          multiple: true
+
+trigger:
+  - platform: state
+    entity_id: !input schedule_for_bt_on
+  - platform: state
+    entity_id: !input monitor_person
+
+variables:
+  target_bt: !input target_bt
+  target_temperature: !input target_temperature
+  schedule_for_bt_on: !input schedule_for_bt_on
+  monitor_person: !input monitor_person
+  numPeople: "{{ monitor_person | list | length }}"
+  numPeopleAtHome: "{{ monitor_person | select('is_state', 'home') | list | length }}"
+  isScheduled: "{{ is_state(schedule_for_bt_on, 'on') }}"
+
+condition: []
+
+actions:
+  - choose:
+    - conditions: >-
+        {{ isScheduled and (numPeople == 0 or numPeopleAtHome > 0) }}
+      sequence:
+        - service: better_thermostat.restore_saved_target_temperature
+          data: {}
+          target: !input target_bt
+
+    - conditions: >-
+        {{ not isScheduled or numPeople > 0 and numPeopleAtHome == 0 }}
+      sequence:
+        - service: better_thermostat.set_temp_target_temperature
+          data:
+            temperature: !input target_temperature
+          target: !input target_bt
