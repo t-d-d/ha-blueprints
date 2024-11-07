@@ -49,7 +49,7 @@ variables:
   bt: !input bt
   valve_closing_degree_entity: !input valve_closing_degree_entity
   target_temp_degree: !input target_temp_degree
-  isFullyClosed: "{{ state_attr(bt, 'temperature') - state_attr(bt, 'target_temperature') > 0.3 }}"
+  isFullyClosed: "{{ state_attr(bt, 'current_temperature') - state_attr(bt, 'temperature') > 0.3 }}"
   isBoosting: "{{ not is_state('sensor.boiler_radiator_boost_demand', 0) }}"
 
 condition: []
