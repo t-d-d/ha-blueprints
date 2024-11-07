@@ -71,7 +71,7 @@ variables:
   target_temp_degree: !input target_temp_degree
   target_temperature_range: !input target_temperature_range
   overTemperature: "{{ state_attr(bt, 'current_temperature') - state_attr(bt, 'temperature') > target_temperature_range / 2 }}"
-  underTemperature: "{{ state_attr(bt, 'current_temperature') - state_attr(bt, 'temperature') < target_temperature_range / 2 }}"
+  underTemperature: "{{ state_attr(bt, 'temperature') - state_attr(bt, 'current_temperature') < target_temperature_range / 2 }}"
   isBoosting: "{{ not is_state('sensor.boiler_radiator_boost_demand', 0) }}"
 
 condition: []
