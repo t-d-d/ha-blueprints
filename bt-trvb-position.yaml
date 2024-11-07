@@ -6,7 +6,7 @@ blueprint:
     Positions Sonnoff TRV valve opening/ closing position based on target temperature
 
     Version 1.0, 27/10/2024
-  source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-trvb-position.yaml
+  source_url: https://raw.githubusercontent.com/t-d-d/ha-blueprints/refs/heads/master/bt-trvb-position.yaml
 
   input:
     bt:
