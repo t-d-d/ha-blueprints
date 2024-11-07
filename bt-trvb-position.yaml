@@ -105,7 +105,7 @@ actions:
       data_template:
         value: >-
           {% if isUnderTemperature %}
-            {{ target_temp_valve_degree }}
+            {{ under_temp_valve_degree }}
           {% elif isOverTemperature or isBoosting %}
             0
           {% else %}
