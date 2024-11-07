@@ -74,6 +74,8 @@ trigger:
     entity_id: sensor.boiler_radiator_boost_demand
     from: '0'
 
+mode: single
+
 variables:
   bt: !input bt
   valve_closing_degree_entity: !input valve_closing_degree_entity
@@ -89,6 +91,7 @@ condition: []
 
 actions:
   - sequence:
+    - delay: 2
     - service: number.set_value
       target: !input valve_closing_degree_entity
       data_template:
