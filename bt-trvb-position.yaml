@@ -6,7 +6,7 @@ blueprint:
     Positions Sonnoff TRV valve opening/ closing position based on target temperature
 
     Version 1.0, 24/10/2024
-  source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-scheduler.yaml
+  source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-trvb-position.yaml
 
   input:
     bt:
@@ -40,10 +40,10 @@ trigger:
     entity_id: !input bt
   - platform: state
     entity_id: sensor.boiler_radiator_boost_demand
-    to: 0
+    to: '0'
   - platform: state
     entity_id: sensor.boiler_radiator_boost_demand
-    from: 0
+    from: '0'
 
 variables:
   bt: !input bt
