@@ -58,5 +58,5 @@ actions:
   - sequence:
     - service: number.set_value
       data_template:
-        value: "{{ iff(isFullyClosed, 100, target_temp_degree) }}"
+        value: "{{ iif(isFullyClosed, 100, target_temp_degree) }}"
         target: "{{ valve_closing_degree_entity }}"
