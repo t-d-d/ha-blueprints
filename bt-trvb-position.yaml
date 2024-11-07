@@ -1,0 +1,62 @@
+blueprint:
+  name: Better Thermostat Sonnoff TRV positioner
+  domain: automation
+  author: Thomas Dickinson
+  description: |-
+    Positions Sonnoff TRV valve opening/ closing position based on target temperature
+
+    Version 1.0, 24/10/2024
+  source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-scheduler.yaml
+
+  input:
+    bt:
+      name: Better Thermostats
+      description: Better Thermostat that gives target temperature and current temperature
+      selector:
+        entity:
+          integration: better_thermostat
+          domain: climate
+
+    valve_closing_degree_entity:
+      name: Valve closing degree entity
+      description: Input entity to set the valve closing degree
+      selector:
+        entity:
+          domain: number
+          multiple: true
+
+    target_temp_degree:
+      name: Valve closing degree target value
+      description: Degree to which the valve is closed at target temperature
+      default: 80
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: '%'
+
+trigger:
+  - platform: state
+    entity_id: !input bt
+  - platform: state
+    entity_id: sensor.boiler_radiator_boost_demand
+    to: 0
+  - platform: state
+    entity_id: sensor.boiler_radiator_boost_demand
+    from: 0
+
+variables:
+  bt: !input bt
+  valve_closing_degree_entity: !input valve_closing_degree_entity
+  target_temp_degree: !input target_temp_degree
+  isFullyClosed: "{{ state_attr(bt, 'temperature') - state_attr(bt, 'target_temperature') > 0.3 }}"
+  isBoosting: "{{ not is_state('sensor.boiler_radiator_boost_demand', 0) }}"
+
+condition: []
+
+actions:
+  - sequence:
+    - service: number.set_value
+      data_template:
+        value: "{{ iff(isFullyClosed, 100, target_temp_degree) }}"
+        target: "{{ valve_closing_degree_entity }}"
