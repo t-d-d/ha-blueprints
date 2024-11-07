@@ -21,9 +21,9 @@ blueprint:
       name: Valve closing degree entity
       description: Input entity to set the valve closing degree
       selector:
-        entity:
-          domain: number
-          multiple: true
+        target:
+          entity:
+            domain: number
 
     target_temp_degree:
       name: Valve closing degree target value
