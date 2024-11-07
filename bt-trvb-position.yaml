@@ -57,6 +57,6 @@ condition: []
 actions:
   - sequence:
     - service: number.set_value
+      target: !input valve_closing_degree_entity
       data_template:
         value: "{{ iif(isFullyClosed, 100, target_temp_degree) }}"
-        target: !input valve_closing_degree_entity
