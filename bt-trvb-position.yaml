@@ -74,7 +74,7 @@ trigger:
     entity_id: sensor.boiler_radiator_boost_demand
     from: '0'
 
-mode: single
+mode: restart
 
 variables:
   bt: !input bt
