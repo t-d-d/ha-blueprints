@@ -34,7 +34,7 @@ blueprint:
             domain: number
 
     target_temp_valve_degree:
-      name: Target temperature valve opening percentage
+      name: At target temperature valve opening percentage
       description: Degree to which the valve is left open when at the target temperature
       default: 15
       selector:
@@ -55,7 +55,7 @@ blueprint:
 
     target_temperature_lower_bound:
       name: Target temperature lower bound
-      description: Degrees around the target temperature to consider at temperature
+      description: Degrees below the target temperature to consider at temperature
       default: -0.2
       selector:
         number:
@@ -95,8 +95,8 @@ variables:
   under_temp_valve_degree: !input under_temp_valve_degree
   target_temperature_lower_bound: !input target_temperature_lower_bound
   target_temperature_upper_bound: !input target_temperature_upper_bound
-  isOverTemperature: "{{ state_attr(bt, 'current_temperature')*10 - state_attr(bt, 'temperature')*10 > target_temperature_upper_bound*10 }}"
-  isUnderTemperature: "{{ state_attr(bt, 'current_temperature')*10 - state_attr(bt, 'temperature')*10 < target_temperature_lower_bound*10 }}"
+  isOverTemperature: "{{ (state_attr(bt, 'current_temperature')*10|int) - (state_attr(bt, 'temperature')*10|int) > (target_temperature_upper_bound*10|int) }}"
+  isUnderTemperature: "{{ (state_attr(bt, 'current_temperature')*10|int) - (state_attr(bt, 'temperature')*10|int) < (target_temperature_lower_bound*10|int) }}"
 #  isBoosting: "{{ not is_state('sensor.boiler_radiator_boost_demand', '0') }}"
 
 condition: []
