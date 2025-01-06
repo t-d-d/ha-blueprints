@@ -67,6 +67,9 @@ trigger:
     entity_id: !input schedule_for_bt_on
   - platform: state
     entity_id: !input monitor_person
+conditions:
+  - condition: template
+    value_template: "{{ trigger.to_state.state not in ['unknown', 'unavailable'] }}"
 
 variables:
   target_bt: !input target_bt
@@ -85,10 +88,6 @@ variables:
       {% endif %}
     {% endfor %}
     {{ data.count }}
-
-conditions:
-  - condition: template
-    value_template: "{{ trigger.to_state.state not in ['unknown', 'unavailable'] }}"
 
 actions:
   - choose:
