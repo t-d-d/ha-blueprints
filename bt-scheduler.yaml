@@ -79,7 +79,7 @@ variables:
   numPeople: "{{ monitor_person | list | length }}"
   numPeopleAtHome: >-
     {% set data = namespace(count = 0) %}
-    {% for person in monitor_person) %}
+    {% for person in monitor_person %}
       {% if state(person) in (zones + 'home') %}
         {% set data.count = data.count + 1 %}
       {% endif %}
@@ -87,9 +87,7 @@ variables:
     {{ data.count }}
 
 condition:
-  - platform: template
-    value_template: >-
-      {{ trigger.to_state.state not in ['unknown', 'unavailable'] }}
+  - template: "{{ trigger.to_state.state not in ['unknown', 'unavailable'] }}"
 
 actions:
   - choose:
