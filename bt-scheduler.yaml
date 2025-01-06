@@ -48,6 +48,7 @@ blueprint:
     monitor_person:
       name: Persons
       description: The person(s) to monitor for presence at home. When all are not home, the set-back temperature will be set.
+      default: []
       selector:
         entity:
           domain: person
