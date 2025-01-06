@@ -78,12 +78,11 @@ variables:
   monitor_person: !input monitor_person
   monitor_zones: !input monitor_zones
   isScheduled: "{{ is_state(schedule_for_bt_on, 'on') }}"
-  zones: "{{ monitor_zones | state_attr('friendly_name') | list }}"
+  zones: "{{ monitor_zones | map('state_attr', 'friendly_name') | list }}"
   numPeople: "{{ monitor_person | list | length }}"
   numPeopleAtHome: >-
-    {% set data = namespace(count = 0) %}
     {% for person in monitor_person %}
-      {% if state(person) in (zones + 'home') %}
+      {% if states(person) in (zones + ['home']) %}
         {% set data.count = data.count + 1 %}
       {% endif %}
     {% endfor %}
