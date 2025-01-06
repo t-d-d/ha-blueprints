@@ -81,6 +81,7 @@ variables:
   zones: "{{ monitor_zones | map('state_attr', 'friendly_name') | list }}"
   numPeople: "{{ monitor_person | list | length }}"
   numPeopleAtHome: >-
+    {% set data = namespace(count=0) %}
     {% for person in monitor_person %}
       {% if states(person) in (zones + ['home']) %}
         {% set data.count = data.count + 1 %}
