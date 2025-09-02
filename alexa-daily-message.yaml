@@ -152,7 +152,8 @@ action:
   
       events_flat: >-
         {% set items = [] %}
-        {% for cal, payload in agenda.items() %}
+        {% for cal in agenda %}                         {# iterate keys directly #}
+          {% set payload = agenda[cal] %}
           {% if payload is mapping and 'events' in payload and (payload['events'] | count) > 0 %}
             {% for e in payload['events'] %}
               {% set s = e['start'] %}
@@ -181,6 +182,14 @@ action:
           {% endif %}
         {% endfor %}
         {{ items | sort(attribute='start_ts') }}
+
+  - service: persistent_notification.create
+    data:
+      title: "Morning brief: flatten check"
+      message: >
+        agenda calendars seen = {{ (agenda | list | length) if agenda is mapping else 'n/a' }}
+        flattened events = {{ events_flat | count }}
+        first = {{ (events_flat[0] | tojson) if (events_flat | count) > 0 else 'none' }}
 
   # 4) Build the LLM prompt
   - variables:
