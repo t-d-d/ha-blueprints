@@ -92,32 +92,40 @@ action:
 
   # 4) Build a compact JSON payload for the LLM
   - variables:
-      # Flatten events from multiple calendars into one list, each tagged with the calendar name
+      # Flatten events from multiple calendars without using .append()
       events_flat: >-
-        {% set out = [] %}
+        {% set items = [] %}
         {% for cal, data in agenda.items() %}
-          {% for e in data.get('events', []) %}
-            {% set item = {
-              'calendar': cal,
-              'summary': e.get('summary',''),
-              'description': e.get('description',''),
-              'location': e.get('location',''),
-              'start': e.get('start'),
-              'end': e.get('end'),
-              'all_day': e.get('all_day', False)
-            } %}
-            {% set _ = out.append(item) %}
-          {% endfor %}
+          {% if 'events' in data %}
+            {% for e in data['events'] %}
+              {% set items = items + [ {
+                'calendar': cal,
+                'summary': e['summary'] | default(''),
+                'description': e['description'] | default(''),
+                'location': e['location'] | default(''),
+                'start': e['start'],
+                'end': e['end'],
+                'all_day': e['all_day'] | default(false)
+              } ] %}
+            {% endfor %}
+          {% endif %}
         {% endfor %}
-        {{ out | sort(attribute='start') }}
+        {{ items | sort(attribute='start') }}
 
-      # First daily forecast object (today)
+      # Grab "today" from weather.get_forecasts response
       today_forecast: >-
-        {% set w = forecast[forecast | list | first] if forecast is mapping else forecast %}
-        {% set key = (forecast.keys() | list | first) if forecast is mapping else None %}
-        {% set f = (forecast[key]['forecast'][0] if key else None) if forecast else None %}
-        {{ f if f else {} }}
+        {% if forecast %}
+          {% set key = forecast.keys() | list | first %}
+          {% if key and 'forecast' in forecast[key] and (forecast[key]['forecast'] | count) > 0 %}
+            {{ forecast[key]['forecast'][0] }}
+          {% else %}
+            {}
+          {% endif %}
+        {% else %}
+          {}
+        {% endif %}
 
+      # Build the LLM prompt (unchanged except for relying on HA's timezone)
       llm_prompt: >-
         You are generating a short morning briefing to be spoken by Alexa to {{ v_person }}.
         Use a friendly {{ v_style }} voice. Use British date/time conventions.
@@ -129,7 +137,7 @@ action:
         }
         Rules:
         - Mention the weekday and date, then a one-line weather headline (temp highs/lows, rain chance if available).
-        - List key events in chronological order with clear times (e.g., “at 8:30, GCSE Physics revision; at 11, dentist”).
+        - List key events in chronological order with clear times (e.g., “at 08:30, GCSE Physics revision; at 11:00, dentist”).
         - If no events, say that explicitly and offer a simple encouragement.
         - Keep to ~3–6 short sentences. Avoid filler. No markup, plain text only.
 
