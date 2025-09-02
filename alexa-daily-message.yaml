@@ -132,9 +132,9 @@ action:
 
   - service: persistent_notification.create
     data:
-      title: "Morning brief: agenda debug"
+      title: "Morning brief debug"
       message: >
-        calendars input = {{ !input calendars }}
+        calendars input = {{ !input calendars | tojson }}
         agenda raw = {{ agenda | tojson }}
 
   # 2) Pull today's weather forecast
