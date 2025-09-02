@@ -2,9 +2,9 @@ blueprint:
   name: Morning Brief on Alexa (LLM + Fallback + Retries)
   description: >
     On a single helper toggle (e.g., Alexa Routine "Alarm dismissed"),
-    fetch today's Google Calendar events and weather, shape into a short briefing
-    with an OpenAI Conversation agent (with retries/backoff), fall back to a
-    simple formatter if needed, and speak it on selected Alexa device(s).
+    fetch today's Google Calendar events (and optionally weather), shape a short briefing
+    with an OpenAI Conversation agent (with retries/backoff), fall back to a simple
+    formatter if needed, and speak it on selected Alexa device(s).
   domain: automation
   input:
     trigger_helper:
@@ -28,8 +28,15 @@ blueprint:
           domain: calendar
           multiple: true
 
+    include_weather:
+      name: Include weather
+      description: Turn off to skip weather entirely
+      default: true
+      selector:
+        boolean: {}
+
     weather_entity:
-      name: Weather entity
+      name: Weather entity (used only if Include weather = on)
       selector:
         entity:
           domain: weather
@@ -106,6 +113,7 @@ variables:
   v_max_events: !input max_events
   v_max_tries: !input retry_attempts
   v_base_delay_ms: !input retry_delay_ms
+  v_include_weather: !input include_weather
 
 trigger:
   - platform: state
@@ -114,10 +122,10 @@ trigger:
     to: "on"
 
 action:
+  # 0) Today's window (inclusive start, exclusive end)
   - variables:
       start_dt: "{{ today_at('00:00:00') }}"
-      end_dt:   "{{ as_datetime(as_timestamp(today_at('00:00:00')) + 86400) }}"  # tomorrow 00:00
-
+      end_dt:   "{{ as_datetime(as_timestamp(today_at('00:00:00')) + 86400) }}"
 
   # 1) Pull events from selected calendars
   - service: calendar.get_events
@@ -128,31 +136,33 @@ action:
       end_date_time: "{{ end_dt }}"
     response_variable: agenda
 
-  # 2) Pull today's weather forecast
-  - service: weather.get_forecasts
-    target:
-      entity_id: !input weather_entity
-    data:
-      type: daily
-    response_variable: forecast
+  # 2) (Optional) Weather
+  - choose:
+      - conditions: "{{ v_include_weather }}"
+        sequence:
+          - service: weather.get_forecasts
+            target:
+              entity_id: !input weather_entity
+            data:
+              type: daily
+            response_variable: forecast
+          - variables:
+              weather_key: !input weather_entity
+              today_forecast: >-
+                {% set key = weather_key %}
+                {% if forecast and forecast is mapping and (key in forecast)
+                      and ('forecast' in forecast[key]) and (forecast[key]['forecast'] | count) > 0 %}
+                  {{ forecast[key]['forecast'][0] }}
+                {% else %}{}{% endif %}
+    default:
+      - variables:
+          today_forecast: "{}"
 
-  # 3) Extract today's forecast and flatten events that overlap today
-  # 3a) Make the weather entity available to Jinja (no templating here)
+  # 3) Flatten events safely (HA Jinja sandbox friendly)
   - variables:
-      weather_key: !input weather_entity
-  
-  # 3b) Extract today's forecast and flatten events (Jinja can use weather_key)
-  - variables:
-      today_forecast: >-
-        {% set key = weather_key %}
-        {% if forecast and forecast is mapping and (key in forecast)
-              and ('forecast' in forecast[key]) and (forecast[key]['forecast'] | count) > 0 %}
-          {{ forecast[key]['forecast'][0] }}
-        {% else %}{}{% endif %}
-  
       events_flat: >-
         {% set ns = namespace(items=[]) %}
-        {% for cal in agenda %}                          {# iterate keys directly #}
+        {% for cal in agenda %}
           {% set payload = agenda[cal] %}
           {% if payload is mapping and 'events' in payload %}
             {% for e in payload['events'] %}
@@ -161,7 +171,6 @@ action:
               {% set s_is_date = (s is string and s | length == 10) %}
               {% set e_is_date = (en is string and en | length == 10) %}
               {% set all_day = s_is_date and e_is_date %}
-              {# Keep it simple; we can sort without parsing datetimes #}
               {% set sort_key = (s ~ 'T00:00:00') if all_day else s %}
               {% set ns.items = ns.items + [ {
                 'calendar': cal,
@@ -174,20 +183,12 @@ action:
             {% endfor %}
           {% endif %}
         {% endfor %}
-        {{ ns.items | sort(attribute='sort_key') }}
+        {{ (ns.items | sort(attribute='sort_key'))[: (v_max_events | int)] }}
 
-  - service: persistent_notification.create
-    data:
-      title: "Morning brief: flatten check"
-      message: >
-        agenda calendars seen = {{ (agenda | list | length) if agenda is mapping else 'n/a' }}
-        flattened events = {{ events_flat | count }}
-        first = {{ (events_flat[0] | tojson) if (events_flat | count) > 0 else 'none' }}
-
-  # 4) Build the LLM prompt
+  # 4) Build the LLM prompt (don’t address by name if blank)
   - variables:
       llm_prompt: >-
-        You are generating a short morning briefing to be spoken by Alexa to {{ v_person }}.
+        You are generating a short morning briefing to be spoken by Alexa{% if v_person|trim %} to {{ v_person }}{% endif %}.
         Use a friendly {{ v_style }} voice. Use British date/time conventions.
         Input data is JSON:
         {
@@ -196,11 +197,13 @@ action:
           "weather_today": {{ today_forecast | tojson }}
         }
         Rules:
-        - Start with weekday and date, then a one-line weather headline (temp highs/lows; mention rain chance if present).
+        - Start with weekday and date{{ ' and a one-line weather headline (temp highs/lows; mention rain chance if present)' if v_include_weather else '' }}.
+        - If weather_today is empty, omit the weather entirely.
         - List key events in chronological order with clear times (e.g., "at 08:30, GCSE Physics revision; at 11:00, dentist").
-        - For all-day multi-day events, say "(day X of N)".
+        - For all-day multi-day events, say "(day X of N)" if the model can infer it; otherwise just say "(all day)".
         - If there are no events, say that explicitly and give a brief encouragement.
         - Keep to about 3–6 short sentences. No markup; plain text only.
+        - If no name is provided, do not address the listener by name.
 
   # 5) LLM with retries + backoff
   - variables:
@@ -224,12 +227,6 @@ action:
                  if llm is defined and llm.response is defined
                  and llm.response.speech is defined and llm.response.speech.plain is defined
                  else '' }}
-            error_code: >-
-              {% if llm is defined and llm.response is defined and llm.response.response_type == 'error' %}
-              {{ llm.response.data.code | default('unknown') }}{% else %}{% endif %}
-            error_msg: >-
-              {% if llm is defined and llm.response is defined and llm.response.response_type == 'error' %}
-              {{ llm.response.data.message | default('') }}{% else %}{% endif %}
 
         - choose:
             - conditions: "{{ speech_try | trim != '' }}"
@@ -238,26 +235,22 @@ action:
                     speech_final: "{{ speech_try }}"
             - conditions: "{{ speech_try | trim == '' }}"
               sequence:
-                - service: system_log.write
-                  data:
-                    level: warning
-                    logger: "morning_brief.llm"
-                    message: >-
-                      LLM attempt {{ repeat.index }} failed{{ ' (' ~ error_code ~ ')' if error_code else '' }}.
-                      {{ error_msg if error_msg else '' }}
                 - delay:
                     milliseconds: >-
                       {{ (v_base_delay_ms | int) * (2 ** (repeat.index - 1)) }}
 
-  # 6) Non-LLM fallback
+  # 6) Non-LLM fallback (always available; greeting omits blank name)
   - variables:
       speech_basic: >-
         {% set parts = [] %}
-        {% if today_forecast %}
+        {% set greeting = 'Morning' ~ ( ' ' ~ v_person if v_person|trim else '' ) ~ '.' %}
+        {% if v_include_weather and today_forecast %}
           {% set cond = today_forecast.condition | default('') %}
           {% set hi = today_forecast.temperature | default('?') %}
           {% set lo = today_forecast.templow | default('?') %}
-          {% set parts = parts + ['Morning ' ~ v_person ~ '. Today: ' ~ cond ~ ', high ' ~ hi ~ '°, low ' ~ lo ~ '°.'] %}
+          {% set parts = parts + [ greeting ~ ' Today: ' ~ cond ~ ', high ' ~ hi ~ '°, low ' ~ lo ~ '°.' ] %}
+        {% else %}
+          {% set parts = parts + [ greeting ] %}
         {% endif %}
         {% if events_flat | count == 0 %}
           {% set parts = parts + ['No events in the calendar. Have a great day!'] %}
@@ -265,13 +258,9 @@ action:
           {% set parts = parts + ['Here are your events:'] %}
           {% for e in events_flat %}
             {% if e.all_day %}
-              {% if e.multi_day and e.total_days > 1 %}
-                {% set line = e.summary ~ ' (all day, day ' ~ e.day_index ~ ' of ' ~ e.total_days ~ ')' %}
-              {% else %}
-                {% set line = e.summary ~ ' (all day)' %}
-              {% endif %}
+              {% set line = e.summary ~ ' (all day)' %}
             {% else %}
-              {% set line = as_datetime(e.start).strftime('%H:%M') ~ ': ' ~ e.summary %}
+              {% set line = (e.start[11:16]) ~ ': ' ~ e.summary %}
             {% endif %}
             {% set parts = parts + [line] %}
           {% endfor %}
@@ -280,22 +269,7 @@ action:
 
       speech: "{{ (speech_final | default('') | trim) if (speech_final | default('') | trim) != '' else speech_basic }}"
 
-  # 7) DEBUG (safe). Remove later if you like.
-  - variables:
-      dbg_calendars: !input calendars
-      dbg_agenda_json: "{{ agenda | tojson }}"
-      dbg_events_json: "{{ events_flat | tojson }}"
-      dbg_event_count: "{{ events_flat | count }}"
-  - service: persistent_notification.create
-    data:
-      title: "Morning brief debug"
-      message: >
-        calendars_input = {{ dbg_calendars | tojson }}
-        agenda_raw = {{ dbg_agenda_json }}
-        events_today = {{ dbg_event_count }}
-        first_event = {{ (events_flat[0] | tojson) if (events_flat | count) > 0 else 'none' }}
-
-  # 8) Speak on Alexa (target INSIDE data)
+  # 7) Speak on Alexa (target INSIDE data)
   - service: notify.alexa_media
     data:
       target: !input alexa_targets
@@ -303,7 +277,7 @@ action:
       data:
         type: !input tts_mode
 
-  # 9) Reset the helper
+  # 8) Reset the helper
   - service: input_boolean.turn_off
     target:
       entity_id: !input trigger_helper
