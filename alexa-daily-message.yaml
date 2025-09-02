@@ -14,9 +14,8 @@ blueprint:
     alexa_targets:
       name: Alexa device(s) to speak on
       selector:
-        target:
-          entity:
-            domain: media_player
+        entity:
+          domain: media_player
     calendars:
       name: Calendars to include
       selector:
