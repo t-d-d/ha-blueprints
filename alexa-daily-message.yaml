@@ -114,14 +114,10 @@ trigger:
     to: "on"
 
 action:
-  # 0) Time windows: widen search (yesterday->tomorrow) then filter to today
   - variables:
-      start_of_today: "{{ today_at('00:00:00') }}"
-      end_of_today:   "{{ as_datetime(as_timestamp(today_at('00:00:00')) + 86400) }}"
-      start_dt:       "{{ as_datetime(as_timestamp(start_of_today) - 86400) }}"  # yesterday 00:00
-      end_dt:         "{{ as_datetime(as_timestamp(end_of_today) + 86400) }}"    # tomorrow 00:00
-      start_today_ts: "{{ as_timestamp(start_of_today) }}"
-      end_today_ts:   "{{ as_timestamp(end_of_today) }}"
+      start_dt: "{{ today_at('00:00:00') }}"
+      end_dt:   "{{ as_datetime(as_timestamp(today_at('00:00:00')) + 86400) }}"  # tomorrow 00:00
+
 
   # 1) Pull events from selected calendars
   - service: calendar.get_events
@@ -154,7 +150,7 @@ action:
           {{ forecast[key]['forecast'][0] }}
         {% else %}{}{% endif %}
   
-      events_flat_all: >-
+      events_flat: >-
         {% set items = [] %}
         {% for cal, payload in agenda.items() %}
           {% if payload is mapping and 'events' in payload and (payload['events'] | count) > 0 %}
@@ -164,35 +160,27 @@ action:
               {% set s_is_date = (s is string and s | length == 10) %}
               {% set e_is_date = (en is string and en | length == 10) %}
               {% set all_day = s_is_date and e_is_date %}
-              {% set s_ts = as_timestamp(as_datetime(s)) %}
-              {% set e_ts = as_timestamp(as_datetime(en)) %}
-              {% set include = (s_ts < end_today_ts | float) and (e_ts > start_today_ts | float) %}
-              {% if include %}
-                {% set total_days = ((e_ts - s_ts) / 86400) | int %}
-                {% set day_index = (((start_today_ts - s_ts) / 86400) | int) + 1 %}
-                {% set items = items + [ {
-                  'calendar': cal,
-                  'summary': (e['summary'] if 'summary' in e else ''),
-                  'description': (e['description'] if 'description' in e else ''),
-                  'location': (e['location'] if 'location' in e else ''),
-                  'start': s,
-                  'end': en,
-                  'start_ts': s_ts,
-                  'end_ts': e_ts,
-                  'all_day': all_day,
-                  'multi_day': all_day and (total_days > 1),
-                  'day_index': (day_index if all_day else 0),
-                  'total_days': (total_days if all_day else 0)
-                } ] %}
-              {% endif %}
+              {% set s_dt = as_datetime(s) %}
+              {% set en_dt = as_datetime(en) %}
+              {% set start_ts = as_timestamp(s_dt) %}
+              {% set end_ts = as_timestamp(en_dt) %}
+              {% set total_days = ((end_ts - start_ts) / 86400) | int %}
+              {% set items = items + [ {
+                'calendar': cal,
+                'summary': (e['summary'] if 'summary' in e else ''),
+                'start': s,
+                'end': en,
+                'start_ts': start_ts,
+                'end_ts': end_ts,
+                'all_day': all_day,
+                'multi_day': all_day and (total_days > 1),
+                'day_index': (1 if all_day else 0),
+                'total_days': (total_days if all_day else 0)
+              } ] %}
             {% endfor %}
           {% endif %}
         {% endfor %}
         {{ items | sort(attribute='start_ts') }}
-  
-      events_flat: >-
-        {% set items = events_flat_all %}
-        {{ items[: (v_max_events | int)] }}
 
   # 4) Build the LLM prompt
   - variables:
