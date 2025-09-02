@@ -141,14 +141,19 @@ action:
     response_variable: forecast
 
   # 3) Extract today's forecast and flatten events that overlap today
+  # 3a) Make the weather entity available to Jinja (no templating here)
   - variables:
-      # Use the input entity id as key into the forecast mapping
+      weather_key: !input weather_entity
+  
+  # 3b) Extract today's forecast and flatten events (Jinja can use weather_key)
+  - variables:
       today_forecast: >-
-        {% set key = !input weather_entity %}
-        {% if forecast and key in forecast and 'forecast' in forecast[key] and (forecast[key]['forecast'] | count) > 0 %}
+        {% set key = weather_key %}
+        {% if forecast and forecast is mapping and (key in forecast)
+              and ('forecast' in forecast[key]) and (forecast[key]['forecast'] | count) > 0 %}
           {{ forecast[key]['forecast'][0] }}
         {% else %}{}{% endif %}
-
+  
       events_flat_all: >-
         {% set items = [] %}
         {% for cal, payload in agenda.items() %}
@@ -184,7 +189,7 @@ action:
           {% endif %}
         {% endfor %}
         {{ items | sort(attribute='start_ts') }}
-
+  
       events_flat: >-
         {% set items = events_flat_all %}
         {{ items[: (v_max_events | int)] }}
