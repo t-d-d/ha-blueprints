@@ -1,0 +1,190 @@
+blueprint:
+  name: Morning Brief on Alexa (per person)
+  description: >
+    When a specific helper turns on (e.g., from an Alexa Routine “Alarm dismissed”),
+    gather today's Google Calendar events + weather, feed to an LLM to shape a natural
+    brief, and speak it on one or more Alexa devices via Alexa Media Player.
+  domain: automation
+  input:
+    trigger_helper:
+      name: Trigger helper (input_boolean exposed to Alexa Routine)
+      selector:
+        entity:
+          domain: input_boolean
+    alexa_targets:
+      name: Alexa device(s) to speak on
+      selector:
+        target:
+          entity:
+            domain: media_player
+    calendars:
+      name: Calendars to include
+      selector:
+        entity:
+          domain: calendar
+          multiple: true
+    weather_entity:
+      name: Weather entity
+      selector:
+        entity:
+          domain: weather
+    person_name:
+      name: Person name (for personalization)
+      selector:
+        text:
+    openai_agent:
+      name: Conversation agent (OpenAI Conversation)
+      description: Usually "conversation.openai" after adding the OpenAI Conversation integration.
+      default: conversation.openai
+      selector:
+        entity:
+          domain: conversation
+    speaking_style:
+      name: Speaking style
+      default: "cheerful, concise, 20–30 seconds"
+      selector:
+        text:
+    timezone:
+      name: Timezone (optional)
+      description: Leave blank to use HA's default
+      default: ""
+      selector:
+        text:
+
+mode: single
+max_exceeded: silent
+
+variables:
+  v_person: !input person_name
+  v_style: !input speaking_style
+  v_tz: !input timezone
+
+trigger:
+  - platform: state
+    entity_id: !input trigger_helper
+    from: "off"
+    to: "on"
+
+action:
+  # 1) Get today's start/end window
+  - variables:
+      start_dt: >-
+        {{ (today_at().astimezone() if v_tz == "" else now().astimezone(strptime(v_tz,'%Z') if False else None)).replace(hour=0, minute=0, second=0, microsecond=0) }}
+      end_dt: >-
+        {{ (today_at().astimezone() if v_tz == "" else now().astimezone(strptime(v_tz,'%Z') if False else None)).replace(hour=23, minute=59, second=59, microsecond=0) }}
+
+  # 2) Pull events from ALL selected calendars into response_variable "agenda"
+  - service: calendar.get_events
+    target:
+      entity_id: !input calendars
+    data:
+      start_date_time: "{{ start_dt }}"
+      end_date_time: "{{ end_dt }}"
+    response_variable: agenda
+
+  # 3) Pull daily forecast for weather entity
+  - service: weather.get_forecasts
+    target:
+      entity_id: !input weather_entity
+    data:
+      type: daily
+    response_variable: forecast
+
+  # 4) Build a compact JSON payload for the LLM
+  - variables:
+      # Flatten events from multiple calendars into one list, each tagged with the calendar name
+      events_flat: >-
+        {% set out = [] %}
+        {% for cal, data in agenda.items() %}
+          {% for e in data.get('events', []) %}
+            {% set item = {
+              'calendar': cal,
+              'summary': e.get('summary',''),
+              'description': e.get('description',''),
+              'location': e.get('location',''),
+              'start': e.get('start'),
+              'end': e.get('end'),
+              'all_day': e.get('all_day', False)
+            } %}
+            {% set _ = out.append(item) %}
+          {% endfor %}
+        {% endfor %}
+        {{ out | sort(attribute='start') }}
+
+      # First daily forecast object (today)
+      today_forecast: >-
+        {% set w = forecast[forecast | list | first] if forecast is mapping else forecast %}
+        {% set key = (forecast.keys() | list | first) if forecast is mapping else None %}
+        {% set f = (forecast[key]['forecast'][0] if key else None) if forecast else None %}
+        {{ f if f else {} }}
+
+      llm_prompt: >-
+        You are generating a short morning briefing to be spoken by Alexa to {{ v_person }}.
+        Use a friendly {{ v_style }} voice. Use British date/time conventions.
+        Input data is JSON:
+        {
+          "date_iso": "{{ now().date().isoformat() }}",
+          "events": {{ events_flat | tojson }},
+          "weather_today": {{ today_forecast | tojson }}
+        }
+        Rules:
+        - Mention the weekday and date, then a one-line weather headline (temp highs/lows, rain chance if available).
+        - List key events in chronological order with clear times (e.g., “at 8:30, GCSE Physics revision; at 11, dentist”).
+        - If no events, say that explicitly and offer a simple encouragement.
+        - Keep to ~3–6 short sentences. Avoid filler. No markup, plain text only.
+
+  # 5) Ask the Conversation agent (OpenAI) to shape the text
+  - service: conversation.process
+    data:
+      agent_id: !input openai_agent
+      text: "{{ llm_prompt }}"
+    response_variable: llm
+
+  # 6) Extract final speech text (plain)
+  - variables:
+      speech: >-
+        {{ llm.response.speech.plain.speech if llm and llm.response
+           and llm.response.speech and llm.response.speech.plain
+           else 'Good morning. I could not compose your morning brief just now.' }}
+
+  # (Optional) If you prefer not to use an LLM, comment out steps 5–6 above and
+  # uncomment this simple formatter:
+  #
+  # - variables:
+  #     speech: >-
+  #       {% set parts = [] %}
+  #       {% set f = today_forecast %}
+  #       {% if f %}
+  #         {% set _ = parts.append('Morning ' ~ v_person ~
+  #          '. Today: ' ~ (f.condition | default('')) ~
+  #          ', high ' ~ (f.temperature | default('?')) ~ '°, low ' ~ (f.templow | default('?')) ~ '°.') %}
+  #       {% endif %}
+  #       {% if events_flat | length == 0 %}
+  #         {% set _ = parts.append('No events in the calendar. Have a great day!') %}
+  #       {% else %}
+  #         {% set times = events_flat
+  #            | map(attribute='start')
+  #            | list %}
+  #         {% set _ = parts.append('Here are your events:') %}
+  #         {% for e in events_flat %}
+  #           {% if e.all_day %}
+  #             {% set _ = parts.append(e.summary ~ ' (all day)') %}
+  #           {% else %}
+  #             {% set _ = parts.append(as_datetime(e.start).strftime('%H:%M') ~ ': ' ~ e.summary) %}
+  #           {% endif %}
+  #         {% endfor %}
+  #       {% endif %}
+  #       {{ parts | join(' ') }}
+
+  # 7) Speak it on Alexa (alexa_media notify service)
+  - service: notify.alexa_media
+    target: !input alexa_targets
+    data:
+      message: "{{ speech[:790] }}"   # keep under Alexa TTS size
+      data:
+        type: tts
+
+  # 8) Reset the trigger helper for next time
+  - service: input_boolean.turn_off
+    target:
+      entity_id: !input trigger_helper
