@@ -130,6 +130,13 @@ action:
       end_date_time: "{{ end_dt }}"
     response_variable: agenda
 
+  - service: persistent_notification.create
+    data:
+      title: "Morning brief: agenda debug"
+      message: >
+        calendars input = {{ !input calendars }}
+        agenda raw = {{ agenda | tojson }}
+
   # 2) Pull today's weather forecast
   - service: weather.get_forecasts
     target:
