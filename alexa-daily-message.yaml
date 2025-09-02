@@ -188,22 +188,22 @@ action:
         {% set items = events_flat_all %}
         {{ items[: (v_max_events | int)] }}
 
-# --- DEBUG (safe to save & run) ---
-- variables:
-    dbg_calendars: !input calendars
-    dbg_agenda_json: "{{ agenda | tojson }}"
-    dbg_events_json: "{{ events_flat | tojson }}"
-    dbg_event_count: "{{ events_flat | count }}"
-
-- service: persistent_notification.create
-  data:
-    title: "Morning brief debug"
-    message: >
-      calendars_input = {{ dbg_calendars | tojson }}
-      agenda_keys = {{ agenda.keys() | list | join(', ') }}
-      events_today = {{ dbg_event_count }}
-      first_event = {{ (events_flat[0] | tojson) if (events_flat | count) > 0 else 'none' }}
-# --- /DEBUG ---
+  # --- DEBUG (safe to save & run) ---
+  - variables:
+      dbg_calendars: !input calendars
+      dbg_agenda_json: "{{ agenda | tojson }}"
+      dbg_events_json: "{{ events_flat | tojson }}"
+      dbg_event_count: "{{ events_flat | count }}"
+  
+  - service: persistent_notification.create
+    data:
+      title: "Morning brief debug"
+      message: >
+        calendars_input = {{ dbg_calendars | tojson }}
+        agenda_keys = {{ agenda.keys() | list | join(', ') }}
+        events_today = {{ dbg_event_count }}
+        first_event = {{ (events_flat[0] | tojson) if (events_flat | count) > 0 else 'none' }}
+  # --- /DEBUG ---
 
   # 4) Build the LLM prompt
   - variables:
