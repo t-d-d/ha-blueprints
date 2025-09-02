@@ -186,8 +186,8 @@ action:
 
   # 7) Speak it on Alexa (alexa_media notify service)
   - service: notify.alexa_media
-    target: !input alexa_targets
     data:
+      target: !input alexa_targets
       message: "{{ speech[:790] }}"   # keep under Alexa TTS size
       data:
         type: tts
