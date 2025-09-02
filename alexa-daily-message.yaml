@@ -151,37 +151,30 @@ action:
         {% else %}{}{% endif %}
   
       events_flat: >-
-        {% set items = [] %}
-        {% for cal in agenda %}                         {# iterate keys directly #}
+        {% set ns = namespace(items=[]) %}
+        {% for cal in agenda %}                          {# iterate keys directly #}
           {% set payload = agenda[cal] %}
-          {% if payload is mapping and 'events' in payload and (payload['events'] | count) > 0 %}
+          {% if payload is mapping and 'events' in payload %}
             {% for e in payload['events'] %}
               {% set s = e['start'] %}
               {% set en = e['end'] %}
               {% set s_is_date = (s is string and s | length == 10) %}
               {% set e_is_date = (en is string and en | length == 10) %}
               {% set all_day = s_is_date and e_is_date %}
-              {% set s_dt = as_datetime(s) %}
-              {% set en_dt = as_datetime(en) %}
-              {% set start_ts = as_timestamp(s_dt) %}
-              {% set end_ts = as_timestamp(en_dt) %}
-              {% set total_days = ((end_ts - start_ts) / 86400) | int %}
-              {% set items = items + [ {
+              {# Keep it simple; we can sort without parsing datetimes #}
+              {% set sort_key = (s ~ 'T00:00:00') if all_day else s %}
+              {% set ns.items = ns.items + [ {
                 'calendar': cal,
                 'summary': (e['summary'] if 'summary' in e else ''),
                 'start': s,
                 'end': en,
-                'start_ts': start_ts,
-                'end_ts': end_ts,
                 'all_day': all_day,
-                'multi_day': all_day and (total_days > 1),
-                'day_index': (1 if all_day else 0),
-                'total_days': (total_days if all_day else 0)
+                'sort_key': sort_key
               } ] %}
             {% endfor %}
           {% endif %}
         {% endfor %}
-        {{ items | sort(attribute='start_ts') }}
+        {{ ns.items | sort(attribute='sort_key') }}
 
   - service: persistent_notification.create
     data:
