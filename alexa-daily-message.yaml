@@ -187,26 +187,28 @@ action:
   - condition: template
     value_template: "{{ should_run }}"
 
-  # --- Optional wait: hold for a real DISMISS (Companion 'Last Removed Notification') ---
+  # --- Optional wait: hold for a real DISMISS (via wait_template; no entity_id to validate) ---
+  - variables:
+      _dismiss_start_state: >-
+        {{ states(dismiss_sensor_entity) if (dismiss_sensor_entity | string != '') else '' }}
+
   - choose:
       - conditions: "{{ dismiss_sensor_entity | string != '' }}"
         sequence:
-          - wait_for_trigger:
-              - platform: state
-                entity_id: !input dismiss_sensor
+          - wait_template: >-
+              {{ states(dismiss_sensor_entity) != _dismiss_start_state
+                 and ((state_attr(dismiss_sensor_entity, 'package')
+                       or state_attr(dismiss_sensor_entity, 'android.appInfo') or '') | lower
+                       | regex_search(clock_app_package_regex)) }}
             timeout:
               seconds: "{{ dismiss_wait_timeout_seconds }}"
             continue_on_timeout: true
 
           - variables:
-              dismiss_pkg: >-
-                {{ (state_attr(dismiss_sensor_entity, 'package')
-                    or state_attr(dismiss_sensor_entity, 'android.appInfo')
-                    or '') | lower }}
               dismiss_received: "{{ wait.completed | default(false) }}"
-              dismiss_from_clock_app: "{{ dismiss_received and (dismiss_pkg | regex_search(clock_app_package_regex)) }}"
+              dismiss_from_clock_app: "{{ dismiss_received }}"
 
-              # After a removal, check current next alarm on the same sensor that triggered the ring
+              # After removal, check current next alarm on the same sensor that triggered the ring
               curr_next_iso: "{{ states(trigger.entity_id) if trigger and trigger.entity_id else '' }}"
               curr_next_ts: "{{ as_timestamp(curr_next_iso, default=0) }}"
               now2_ts: "{{ now().timestamp() }}"
