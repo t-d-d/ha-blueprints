@@ -1,21 +1,30 @@
 blueprint:
-  name: Morning Brief on Alexa (LLM + Fallback + Retries)
+  name: Alexa Alarm Brief
   description: >
-    On a single helper toggle (e.g., Alexa Routine "Alarm dismissed"),
-    fetch today's Google Calendar events (and optionally weather), shape a short briefing
-    with an OpenAI Conversation agent (with retries/backoff), fall back to a simple
-    formatter if needed, and speak it on selected Alexa device(s).
+    Speak a short morning brief on Alexa when an alarm rings (first ring) or after final dismiss.
+    Works with sensor.*_next_alarm from Alexa Media Player (Echo) and Android HA Companion (phones).
+    Optional weather; OpenAI Conversation formatting with retries + fallback; cooldown (under “Advanced”).
   domain: automation
+
   input:
-    trigger_helper:
-      name: Trigger helper (input_boolean exposed to Alexa)
+    # --- Core (simple) ---
+    alarm_sensors:
+      name: Next-alarm sensors
+      description: "sensor.bedroom_echo_next_alarm, sensor.pixel_7_next_alarm, etc."
       selector:
         entity:
-          domain: input_boolean
+          domain: sensor
+          multiple: true
+
+    first_ring_mode:
+      name: Announce on first ring
+      description: "On = speak at first ring (even if snoozed). Off = wait for final dismiss."
+      default: false
+      selector:
+        boolean: {}
 
     alexa_targets:
       name: Alexa device(s) to speak on
-      description: One or more Echo devices from Alexa Media Player
       selector:
         entity:
           domain: media_player
@@ -30,8 +39,7 @@ blueprint:
 
     include_weather:
       name: Include weather
-      description: Turn off to skip weather entirely
-      default: true
+      default: false
       selector:
         boolean: {}
 
@@ -42,92 +50,120 @@ blueprint:
           domain: weather
 
     person_name:
-      name: Person name (for personalization)
+      name: Person name (optional; leave blank to omit)
       default: ""
       selector:
-        text:
+        text: {}
+
+    extra_instructions:
+      name: Extra instructions (optional)
+      description: Additional prompt text you’d like the model to follow (tone, phrasing, constraints, etc.)
+      default: ""
+      selector:
+        text: {}
+
+    exclude_other_mentions:
+      name: Exclude events @'ed to others
+      description: "On = include only untagged items, @<your name>, or @all"
+      default: true
+      selector:
+        boolean: {}
 
     openai_agent:
       name: Conversation agent (OpenAI Conversation)
-      description: Usually conversation.openai after adding the OpenAI Conversation integration
+      description: "Usually conversation.openai"
       default: conversation.openai
       selector:
         entity:
           domain: conversation
 
-    speaking_style:
-      name: Speaking style (prompt hint)
-      default: "cheerful, concise, 20–30 seconds"
-      selector:
-        text:
+    # --- Advanced (all optional; safe defaults) ---
+    advanced:
+      name: Advanced (optional)
+      description: >
+        Paste YAML or JSON with any of these fields (all optional; defaults shown):
 
-    tts_mode:
-      name: Alexa TTS mode
-      description: "tts speaks immediately; announce plays a chime and can fan out"
-      default: tts
-      selector:
-        select:
-          options:
-            - "tts"
-            - "announce"
+        cooldown_minutes (int, default 3)
+        snooze_threshold_min (int, default 20)
+        window_after_fire_s (int, default 120)
+        post_alarm_delay_s (int, default 30)
+        tts_mode (str: "tts" or "announce", default "tts")
+        max_events (int, default 12)
+        retry_attempts (int, default 3)
+        retry_delay_ms (int, default 1200)
 
-    max_events:
-      name: Max events to include
-      default: 12
+        Example (YAML):
+          cooldown_minutes: 4
+          snooze_threshold_min: 15
+          post_alarm_delay_s: 45
+          tts_mode: announce
+          max_events: 10
+      default: {}
       selector:
-        number:
-          min: 1
-          max: 50
-          step: 1
-          mode: slider
-
-    retry_attempts:
-      name: LLM retry attempts
-      description: Total tries (1 = no retry)
-      default: 3
-      selector:
-        number:
-          min: 1
-          max: 5
-          step: 1
-          mode: slider
-
-    retry_delay_ms:
-      name: Base retry delay (ms)
-      description: Exponential backoff uses base, base*2, base*4...
-      default: 1200
-      selector:
-        number:
-          min: 200
-          max: 5000
-          step: 100
-          mode: slider
+        object: {}
 
 mode: single
 max_exceeded: silent
 
-variables:
-  v_person: !input person_name
-  v_style: !input speaking_style
-  v_tts_mode: !input tts_mode
-  v_max_events: !input max_events
-  v_max_tries: !input retry_attempts
-  v_base_delay_ms: !input retry_delay_ms
-  v_include_weather: !input include_weather
-
+# Trigger: any selected next-alarm sensor changes
 trigger:
   - platform: state
-    entity_id: !input trigger_helper
-    from: "off"
-    to: "on"
+    entity_id: !input alarm_sensors
+
+# Root-scope variables (simple inputs only)
+variables:
+  v_person: !input person_name
+  v_extra: !input extra_instructions
+  v_include_weather: !input include_weather
+  v_excl_others: !input exclude_other_mentions
+  v_first_ring: !input first_ring_mode
 
 action:
-  # 0) Today's window (inclusive start, exclusive end)
+  # --- Read Advanced + gate (first-ring vs final-dismiss) + set speak time ---
+  - variables:
+      _adv: !input advanced
+      _sensors: !input alarm_sensors
+
+      _cool_min: "{{ _adv.cooldown_minutes | default(3) }}"
+      _snooze_thr_m: "{{ _adv.snooze_threshold_min | default(20) }}"
+      _win_after_s: "{{ _adv.window_after_fire_s | default(120) }}"
+      _post_delay_s: "{{ _adv.post_alarm_delay_s | default(30) }}"
+      v_tts_mode: "{{ _adv.tts_mode | default('tts') }}"
+      v_max_events: "{{ _adv.max_events | default(12) }}"
+      v_max_tries: "{{ _adv.retry_attempts | default(3) }}"
+      v_base_delay_ms: "{{ _adv.retry_delay_ms | default(1200) }}"
+
+      _last_ts: "{{ as_timestamp(state_attr(this.entity_id, 'last_triggered') or 0) }}"
+      _cool_ok: "{{ (now().timestamp() - (_last_ts | float(0))) > ((_cool_min | int) * 60) }}"
+
+      _is_sensor: "{{ trigger.platform == 'state' and (trigger.entity_id in _sensors) }}"
+      _prev: "{{ trigger.from_state.state if trigger.from_state else '' }}"
+      _next: "{{ trigger.to_state.state   if trigger.to_state   else '' }}"
+      _prev_ok: "{{ _prev not in ['unknown','unavailable','','None',None] }}"
+      _next_ok: "{{ _next not in ['unknown','unavailable','','None',None] }}"
+      _prev_ts: "{{ as_timestamp(_prev) if _prev_ok else 0 }}"
+      _next_ts: "{{ as_timestamp(_next) if _next_ok else 0 }}"
+      _now_ts:  "{{ now().timestamp() }}"
+
+      _fired_recently: "{{ _is_sensor and (_now_ts >= _prev_ts) and (_now_ts < (_prev_ts + (_win_after_s | int))) }}"
+      _delta_s: "{{ (_next_ts - _prev_ts) if (_next_ts and _prev_ts) else 0 }}"
+      _looks_snooze: "{{ _delta_s > 0 and _delta_s <= ((_snooze_thr_m | int) * 60) }}"
+
+      _ok_first_ring: "{{ v_first_ring and _fired_recently }}"
+      _ok_final_dismiss: "{{ (not v_first_ring) and _fired_recently and (not _looks_snooze) }}"
+      _go: "{{ (_ok_first_ring or _ok_final_dismiss) and _cool_ok }}"
+
+      # Target speak time (post delay after the alarm's scheduled time)
+      _speak_at_ts: "{{ (_prev_ts + (_post_delay_s | int)) if (_ok_first_ring or _ok_final_dismiss) else _now_ts }}"
+
+  - condition: template
+    value_template: "{{ _go }}"
+
+  # --- Fetch today's events (and optional weather) ---
   - variables:
       start_dt: "{{ today_at('00:00:00') }}"
       end_dt:   "{{ as_datetime(as_timestamp(today_at('00:00:00')) + 86400) }}"
 
-  # 1) Pull events from selected calendars
   - service: calendar.get_events
     target:
       entity_id: !input calendars
@@ -136,7 +172,6 @@ action:
       end_date_time: "{{ end_dt }}"
     response_variable: agenda
 
-  # 2) (Optional) Weather
   - choose:
       - conditions: "{{ v_include_weather }}"
         sequence:
@@ -156,56 +191,77 @@ action:
                 {% else %}{}{% endif %}
     default:
       - variables:
-          today_forecast: "{}"
+          today_forecast: {}
 
-  # 3) Flatten events safely (HA Jinja sandbox friendly)
+  # --- Flatten + @mention filter (case-insensitive), HA Jinja-safe ---
   - variables:
+      v_person_lc: "{{ (v_person | lower | trim) }}"
       events_flat: >-
         {% set ns = namespace(items=[]) %}
         {% for cal in agenda %}
           {% set payload = agenda[cal] %}
           {% if payload is mapping and 'events' in payload %}
             {% for e in payload['events'] %}
-              {% set s = e['start'] %}
-              {% set en = e['end'] %}
-              {% set s_is_date = (s is string and s | length == 10) %}
-              {% set e_is_date = (en is string and en | length == 10) %}
-              {% set all_day = s_is_date and e_is_date %}
-              {% set sort_key = (s ~ 'T00:00:00') if all_day else s %}
-              {% set ns.items = ns.items + [ {
-                'calendar': cal,
-                'summary': (e['summary'] if 'summary' in e else ''),
-                'start': s,
-                'end': en,
-                'all_day': all_day,
-                'sort_key': sort_key
-              } ] %}
+              {% set summary = (e['summary'] if 'summary' in e else '') %}
+              {% set s = summary | lower %}
+              {% set has_any_tag = (s | regex_search('@[\\w-]+')) if (v_excl_others) else false %}
+              {% set tagged_me = (v_excl_others and (v_person_lc|length > 0)
+                                   and (s | regex_search('(^|\\W)@' ~ v_person_lc ~ '(\\W|$)'))) %}
+              {% set tagged_all = (v_excl_others and (s | regex_search('(^|\\W)@all(\\W|$)'))) %}
+              {% set include = (not v_excl_others) or tagged_me or tagged_all or (not has_any_tag) %}
+              {% if include %}
+                {% set start = e['start'] %}
+                {% set all_day = (start is string and start|length == 10) %}
+                {% set sort_key = (start ~ 'T00:00:00') if all_day else start %}
+                {% set ns.items = ns.items + [ {
+                  'calendar': cal,
+                  'summary': summary,
+                  'start': start,
+                  'end': e['end'],
+                  'all_day': all_day,
+                  'sort_key': sort_key
+                } ] %}
+              {% endif %}
             {% endfor %}
           {% endif %}
         {% endfor %}
-        {{ (ns.items | sort(attribute='sort_key'))[: (v_max_events | int)] }}
+        {{ (ns.items | sort(attribute='sort_key'))[: (v_max_events | int) ] }}
 
-  # 4) Build the LLM prompt (don’t address by name if blank)
+  # --- De-duplicate events by (lowercased summary + start time) ---
+  - variables:
+      events_dedup: >-
+        {% set ns = namespace(items=[], seen=[]) %}
+        {% for e in events_flat %}
+          {% set key = (e.summary | lower | trim) ~ '|' ~ (e.start | string) %}
+          {% if key not in ns.seen %}
+            {% set ns.seen = ns.seen + [key] %}
+            {% set ns.items = ns.items + [e] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+  # --- LLM prompt + retries (delay is AFTER this so we don't double-wait) ---
   - variables:
       llm_prompt: >-
         You are generating a short morning briefing to be spoken by Alexa{% if v_person|trim %} to {{ v_person }}{% endif %}.
-        Use a friendly {{ v_style }} voice. Use British date/time conventions.
+        Use British date/time conventions.
+        {% if v_extra|trim %}Additional instructions: {{ v_extra }}{% endif %}
         Input data is JSON:
         {
           "date_iso": "{{ now().date().isoformat() }}",
-          "events": {{ events_flat | tojson }},
+          "events": {{ events_dedup | tojson }},
           "weather_today": {{ today_forecast | tojson }}
         }
         Rules:
         - Start with weekday and date{{ ' and a one-line weather headline (temp highs/lows; mention rain chance if present)' if v_include_weather else '' }}.
         - If weather_today is empty, omit the weather entirely.
         - List key events in chronological order with clear times (e.g., "at 08:30, GCSE Physics revision; at 11:00, dentist").
-        - For all-day multi-day events, say "(day X of N)" if the model can infer it; otherwise just say "(all day)".
+        - If multiple entries describe the same event (same time and similar title), mention it once (deduplicate).
+        - For all-day events just say "(all day)".
         - If there are no events, say that explicitly and give a brief encouragement.
         - Keep to about 3–6 short sentences. No markup; plain text only.
         - If no name is provided, do not address the listener by name.
 
-  # 5) LLM with retries + backoff
   - variables:
       speech_final: ""
 
@@ -239,7 +295,7 @@ action:
                     milliseconds: >-
                       {{ (v_base_delay_ms | int) * (2 ** (repeat.index - 1)) }}
 
-  # 6) Non-LLM fallback (always available; greeting omits blank name)
+  # --- Fallback text + remaining delay to intended speak time ---
   - variables:
       speech_basic: >-
         {% set parts = [] %}
@@ -252,11 +308,11 @@ action:
         {% else %}
           {% set parts = parts + [ greeting ] %}
         {% endif %}
-        {% if events_flat | count == 0 %}
+        {% if events_dedup | count == 0 %}
           {% set parts = parts + ['No events in the calendar. Have a great day!'] %}
         {% else %}
           {% set parts = parts + ['Here are your events:'] %}
-          {% for e in events_flat %}
+          {% for e in events_dedup %}
             {% if e.all_day %}
               {% set line = e.summary ~ ' (all day)' %}
             {% else %}
@@ -269,15 +325,18 @@ action:
 
       speech: "{{ (speech_final | default('') | trim) if (speech_final | default('') | trim) != '' else speech_basic }}"
 
-  # 7) Speak on Alexa (target INSIDE data)
+  - variables:
+      _delay_left_s: "{{ max(0, (_speak_at_ts - now().timestamp()) | int) }}"
+  - choose:
+      - conditions: "{{ _delay_left_s > 0 }}"
+        sequence:
+          - delay:
+              seconds: "{{ _delay_left_s }}"
+
+  # --- Speak on Alexa ---
   - service: notify.alexa_media
     data:
       target: !input alexa_targets
       message: "{{ speech[:790] }}"
       data:
-        type: !input tts_mode
-
-  # 8) Reset the helper
-  - service: input_boolean.turn_off
-    target:
-      entity_id: !input trigger_helper
+        type: "{{ v_tts_mode }}"
