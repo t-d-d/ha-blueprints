@@ -107,11 +107,15 @@ blueprint:
         no_dismiss_delay_seconds (int, default 30)        # if no dismiss, speak this long after alarm time
         dismiss_wait_timeout_seconds (int, default 60)    # wait up to this for 'Last Removed Notification'
         post_dismiss_delay_seconds (int, default 2)       # delay after a valid dismiss before speaking
-        clock_app_package_regex (str, default "deskclock|clockpackage|oneplus.deskclock|android.deskclock")  # regex match on package
+        clock_app_package_regex (str, default "deskclock|clockpackage|oneplus.deskclock|android.deskclock")
         tts_mode (str: "tts" or "announce", default "tts")
         max_events (int, default 12)
         retry_attempts (int, default 3)
         retry_base_delay_ms (int, default 1200)
+
+        # Debug switches (for isolating crashes/restarts)
+        debug_disable_tts (bool, default false)           # when true, skip Alexa TTS step
+        debug_disable_llm (bool, default false)           # when true, skip LLM call (use fallback speech)
 
         Example (YAML):
           cooldown_minutes: 2
@@ -124,6 +128,8 @@ blueprint:
           clock_app_package_regex: "deskclock|clockpackage"
           tts_mode: announce
           max_events: 10
+          debug_disable_tts: false
+          debug_disable_llm: false
       default: {}
       selector:
         object: {}
@@ -162,6 +168,8 @@ action:
       max_events: "{{ adv.max_events | default(12) }}"
       retry_attempts: "{{ adv.retry_attempts | default(3) }}"
       retry_base_delay_ms: "{{ adv.retry_base_delay_ms | default(1200) }}"
+      debug_disable_tts: "{{ adv.debug_disable_tts | default(false) }}"
+      debug_disable_llm: "{{ adv.debug_disable_llm | default(false) }}"
 
       last_run_ts: "{{ as_timestamp(state_attr(this.entity_id, 'last_triggered') or 0) }}"
       cooldown_ok: "{{ (now().timestamp() - (last_run_ts | float(0))) > ((cooldown_minutes | int) * 60) }}"
@@ -310,7 +318,7 @@ action:
         {% endfor %}
         {{ ns.items }}
 
-  # --- LLM prompt + retries (delay is AFTER this so we don't double-wait) ---
+  # --- LLM prompt + retries (skippable via debug flag) ---
   - variables:
       llm_prompt: >-
         You are generating a short morning briefing to be spoken by Alexa{% if person_name|trim %} to {{ person_name }}{% endif %}.
@@ -332,44 +340,44 @@ action:
         - Keep to about 3–6 short sentences. No markup; plain text only.
         - If no name is provided, do not address the listener by name.
 
-  - variables:
       speech_final: ""
-      retry_attempts: "{{ adv.retry_attempts | default(3) }}"
-      retry_base_delay_ms: "{{ adv.retry_base_delay_ms | default(1200) }}"
-
-  - repeat:
-      until:
-        - condition: template
-          value_template: >-
-            {{ (repeat.index >= (retry_attempts | int)) or ((speech_final | default('') | trim) != '') }}
-      sequence:
-        - service: conversation.process
-          data:
-            agent_id: !input openai_agent
-            text: "{{ llm_prompt }}"
-          response_variable: llm
-
-        - variables:
-            speech_try: >-
-              {{ llm.response.speech.plain.speech
-                 if llm is defined and llm.response is defined
-                 and llm.response.speech is defined and llm.response.speech.plain is defined
-                 else '' }}
-
-        - choose:
-            - conditions: "{{ speech_try | trim != '' }}"
+  - choose:
+      - conditions: "{{ not debug_disable_llm }}"
+        sequence:
+          - repeat:
+              until:
+                - condition: template
+                  value_template: >-
+                    {{ (repeat.index >= (retry_attempts | int)) or ((speech_final | default('') | trim) != '') }}
               sequence:
+                - service: conversation.process
+                  data:
+                    agent_id: !input openai_agent
+                    text: "{{ llm_prompt }}"
+                  response_variable: llm
+
                 - variables:
-                    speech_final: "{{ speech_try }}"
-            - conditions: "{{ speech_try | trim == '' }}"
-              sequence:
-                - delay:
-                    milliseconds: >-
-                      {{ (retry_base_delay_ms | int) * (2 ** (repeat.index - 1)) }}
+                    speech_try: >-
+                      {{ llm.response.speech.plain.speech
+                         if llm is defined and llm.response is defined
+                         and llm.response.speech is defined and llm.response.speech.plain is defined
+                         else '' }}
 
-  # --- Fallback text ---
+                - choose:
+                    - conditions: "{{ speech_try | trim != '' }}"
+                      sequence:
+                        - variables:
+                            speech_final: "{{ speech_try }}"
+                    - conditions: "{{ speech_try | trim == '' }}"
+                      sequence:
+                        - delay:
+                            milliseconds: >-
+                              {{ (retry_base_delay_ms | int) * (2 ** (repeat.index - 1)) }}
+    default: []
+
+  # --- Fallback text and final speech selection ---
   - variables:
-      tts_mode: "{{ adv.tts_mode | default('tts') }}"
+      tts_mode: "{{ tts_mode }}"
       speech_basic: >-
         {% set parts = [] %}
         {% set greeting = 'Morning' ~ ( ' ' ~ person_name if person_name|trim else '' ) ~ '.' %}
@@ -395,7 +403,6 @@ action:
           {% endfor %}
         {% endif %}
         {{ (parts | join(' '))[:790] }}
-
       speech: "{{ (speech_final | default('') | trim) if (speech_final | default('') | trim) != '' else speech_basic }}"
 
   # --- Final snooze guard (works even without dismiss sensor) ---
@@ -424,9 +431,13 @@ action:
           - delay:
               seconds: "{{ remaining_delay_seconds }}"
 
-  - service: notify.alexa_media
-    data:
-      target: !input alexa_targets
-      message: "{{ speech[:790] }}"
-      data:
-        type: "{{ tts_mode }}"
+  - choose:
+      - conditions: "{{ not debug_disable_tts }}"
+        sequence:
+          - service: notify.alexa_media
+            data:
+              target: !input alexa_targets
+              message: "{{ speech[:790] }}"
+              data:
+                type: "{{ tts_mode }}"
+    default: []
