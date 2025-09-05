@@ -20,7 +20,7 @@ blueprint:
     # Optional: phone dismiss sensor (Companion App → Notification sensors → Last Removed Notification)
     dismiss_sensor:
       name: Phone 'Last Removed Notification' sensor (optional)
-      description: "sensor.<phone>_last_removed_notification — used to speak right after DISMISS; falls back if missing/timeout."
+      description: "sensor.<phone>_last_removed_notification — used to speak after DISMISS; falls back if missing/timeout."
       selector:
         entity:
           domain: sensor
@@ -86,31 +86,34 @@ blueprint:
         entity:
           domain: conversation
 
-    # --- Advanced (all optional; safe defaults) ---
+    # --- Advanced (all optional; clear names, safe defaults) ---
     advanced:
       name: Advanced (optional)
       description: >
         Paste YAML or JSON with any of these fields (all optional; defaults shown):
 
         cooldown_minutes (int, default 3)
-        snooze_threshold_min (int, default 20)
-        window_before_fire_s (int, default 5)      # grace: allow sensor to flip up to 5s before alarm time
-        window_after_fire_s (int, default 120)     # accept sensor updates this long after alarm time
-        post_alarm_delay_s (int, default 30)       # fallback speak delay after alarm time if no dismiss
-        dismiss_wait_timeout_s (int, default 60)   # how long to wait for 'Last Removed Notification' before fallback
-        clock_package_pattern (str, default "deskclock|clockpackage|oneplus.deskclock|android.deskclock")  # regex match on package
+        snooze_window_minutes (int, default 20)           # ≤ this looks like a snooze
+        pre_ring_grace_seconds (int, default 5)           # allow sensor flip up to 5s BEFORE alarm time
+        after_ring_window_seconds (int, default 120)      # accept sensor updates this long AFTER alarm time
+        no_dismiss_delay_seconds (int, default 30)        # if no dismiss, speak this long after alarm time
+        dismiss_wait_timeout_seconds (int, default 60)    # wait up to this for 'Last Removed Notification'
+        post_dismiss_delay_seconds (int, default 2)       # delay after a valid dismiss before speaking
+        clock_app_package_regex (str, default "deskclock|clockpackage|oneplus.deskclock|android.deskclock")  # regex match on package
         tts_mode (str: "tts" or "announce", default "tts")
         max_events (int, default 12)
         retry_attempts (int, default 3)
-        retry_delay_ms (int, default 1200)
+        retry_base_delay_ms (int, default 1200)
 
         Example (YAML):
           cooldown_minutes: 2
-          snooze_threshold_min: 15
-          window_before_fire_s: 5
-          window_after_fire_s: 180
-          post_alarm_delay_s: 45
-          dismiss_wait_timeout_s: 60
+          snooze_window_minutes: 15
+          pre_ring_grace_seconds: 5
+          after_ring_window_seconds: 180
+          no_dismiss_delay_seconds: 30
+          dismiss_wait_timeout_seconds: 60
+          post_dismiss_delay_seconds: 5
+          clock_app_package_regex: "deskclock|clockpackage"
           tts_mode: announce
           max_events: 10
       default: {}
@@ -127,97 +130,96 @@ trigger:
 
 # Root-scope variables (simple inputs only)
 variables:
-  v_person: !input person_name
-  v_extra: !input extra_instructions
-  v_include_weather: !input include_weather
-  v_excl_others: !input exclude_other_mentions
-  v_first_ring: !input first_ring_mode
+  person_name: !input person_name
+  extra_instructions: !input extra_instructions
+  include_weather: !input include_weather
+  exclude_other_mentions: !input exclude_other_mentions
+  first_ring_mode: !input first_ring_mode
 
 action:
   # --- Read Advanced + gate (first-ring vs final-dismiss) + set initial speak time ---
   - variables:
-      _adv: !input advanced
-      _sensors: !input alarm_sensors
-      _dismiss_sensor: !input dismiss_sensor
+      adv: !input advanced
+      alarm_entities: !input alarm_sensors
+      dismiss_sensor_entity: !input dismiss_sensor
 
-      _cool_min: "{{ _adv.cooldown_minutes | default(3) }}"
-      _snooze_thr_m: "{{ _adv.snooze_threshold_min | default(20) }}"
-      _pre_grace_s: "{{ _adv.window_before_fire_s | default(5) }}"
-      _win_after_s: "{{ _adv.window_after_fire_s | default(120) }}"
-      _post_delay_s: "{{ _adv.post_alarm_delay_s | default(30) }}"
-      _dismiss_timeout_s: "{{ _adv.dismiss_wait_timeout_s | default(60) }}"
-      _clock_pkg_pat: "{{ _adv.clock_package_pattern | default('deskclock|clockpackage|oneplus.deskclock|android.deskclock') }}"
-      v_tts_mode: "{{ _adv.tts_mode | default('tts') }}"
-      v_max_events: "{{ _adv.max_events | default(12) }}"
-      v_max_tries: "{{ _adv.retry_attempts | default(3) }}"
-      v_base_delay_ms: "{{ _adv.retry_delay_ms | default(1200) }}"
+      cooldown_minutes: "{{ adv.cooldown_minutes | default(3) }}"
+      snooze_window_minutes: "{{ adv.snooze_window_minutes | default(20) }}"
+      pre_ring_grace_seconds: "{{ adv.pre_ring_grace_seconds | default(5) }}"
+      after_ring_window_seconds: "{{ adv.after_ring_window_seconds | default(120) }}"
+      no_dismiss_delay_seconds: "{{ adv.no_dismiss_delay_seconds | default(30) }}"
+      dismiss_wait_timeout_seconds: "{{ adv.dismiss_wait_timeout_seconds | default(60) }}"
+      post_dismiss_delay_seconds: "{{ adv.post_dismiss_delay_seconds | default(2) }}"
+      clock_app_package_regex: "{{ adv.clock_app_package_regex | default('deskclock|clockpackage|oneplus.deskclock|android.deskclock') }}"
+      tts_mode: "{{ adv.tts_mode | default('tts') }}"
+      max_events: "{{ adv.max_events | default(12) }}"
+      retry_attempts: "{{ adv.retry_attempts | default(3) }}"
+      retry_base_delay_ms: "{{ adv.retry_base_delay_ms | default(1200) }}"
 
-      _last_ts: "{{ as_timestamp(state_attr(this.entity_id, 'last_triggered') or 0) }}"
-      _cool_ok: "{{ (now().timestamp() - (_last_ts | float(0))) > ((_cool_min | int) * 60) }}"
+      last_run_ts: "{{ as_timestamp(state_attr(this.entity_id, 'last_triggered') or 0) }}"
+      cooldown_ok: "{{ (now().timestamp() - (last_run_ts | float(0))) > ((cooldown_minutes | int) * 60) }}"
 
-      _is_sensor: "{{ trigger.platform == 'state' and (trigger.entity_id in _sensors) }}"
-      _prev: "{{ trigger.from_state.state if trigger.from_state else '' }}"
-      _next: "{{ trigger.to_state.state   if trigger.to_state   else '' }}"
-      _prev_ok: "{{ _prev not in ['unknown','unavailable','','None',None] }}"
-      _next_ok: "{{ _next not in ['unknown','unavailable','','None',None] }}"
-      _prev_ts: "{{ as_timestamp(_prev) if _prev_ok else 0 }}"
-      _next_ts: "{{ as_timestamp(_next) if _next_ok else 0 }}"
-      _now_ts:  "{{ now().timestamp() }}"
+      is_from_alarm_sensor: "{{ trigger.platform == 'state' and (trigger.entity_id in alarm_entities) }}"
+      alarm_prev_iso: "{{ trigger.from_state.state if trigger.from_state else '' }}"
+      alarm_next_iso: "{{ trigger.to_state.state   if trigger.to_state   else '' }}"
+      prev_alarm_ts: "{{ as_timestamp(alarm_prev_iso, default=0) }}"
+      next_alarm_ts: "{{ as_timestamp(alarm_next_iso, default=0) }}"
+      now_ts: "{{ now().timestamp() }}"
 
-      _fired_recently: "{{ _is_sensor and (_now_ts >= (_prev_ts - (_pre_grace_s | int))) and (_now_ts < (_prev_ts + (_win_after_s | int))) }}"
-      _delta_s: "{{ (_next_ts - _prev_ts) if (_next_ts and _prev_ts) else 0 }}"
-      _looks_snooze: "{{ _delta_s > 0 and _delta_s <= ((_snooze_thr_m | int) * 60) }}"
+      in_ring_window: "{{ is_from_alarm_sensor and (now_ts >= (prev_alarm_ts - (pre_ring_grace_seconds | int))) and (now_ts < (prev_alarm_ts + (after_ring_window_seconds | int))) }}"
+      delta_seconds: "{{ (next_alarm_ts - prev_alarm_ts) if (next_alarm_ts and prev_alarm_ts) else 0 }}"
+      looks_like_snooze: "{{ delta_seconds > 0 and delta_seconds <= ((snooze_window_minutes | int) * 60) }}"
 
-      _ok_first_ring: "{{ v_first_ring and _fired_recently }}"
-      _ok_final_dismiss: "{{ (not v_first_ring) and _fired_recently and (not _looks_snooze) }}"
-      _go: "{{ (_ok_first_ring or _ok_final_dismiss) and _cool_ok }}"
+      ok_first_ring: "{{ first_ring_mode and in_ring_window }}"
+      ok_final_dismiss: "{{ (not first_ring_mode) and in_ring_window and (not looks_like_snooze) }}"
+      should_run: "{{ (ok_first_ring or ok_final_dismiss) and cooldown_ok }}"
 
-      # Initial target speak time (post delay after scheduled alarm time)
-      _speak_at_ts: "{{ (_prev_ts + (_post_delay_s | int)) if (_ok_first_ring or _ok_final_dismiss) else _now_ts }}"
+      # Initial target speak time (used ONLY if we don't get a real dismiss)
+      speak_at_ts: "{{ (prev_alarm_ts + (no_dismiss_delay_seconds | int)) if (ok_first_ring or ok_final_dismiss) else now_ts }}"
 
   - condition: template
-    value_template: "{{ _go }}"
+    value_template: "{{ should_run }}"
 
   # --- Optional wait: hold for a real DISMISS (Companion 'Last Removed Notification') ---
   - choose:
-      - conditions: "{{ _dismiss_sensor | default('') | string != '' }}"
+      - conditions: "{{ dismiss_sensor_entity | default('') | string != '' }}"
         sequence:
           - wait_for_trigger:
               - platform: state
                 entity_id: !input dismiss_sensor
             timeout:
-              seconds: "{{ _dismiss_timeout_s }}"
+              seconds: "{{ dismiss_wait_timeout_seconds }}"
             continue_on_timeout: true
 
           - variables:
-              _dismiss_pkg: >-
-                {{ (state_attr(_dismiss_sensor, 'package') 
-                     or state_attr(_dismiss_sensor, 'android.appInfo') 
-                     or '') | lower }}
-              _dismiss_hit: "{{ wait.completed | default(false) }}"
-              _dismiss_ok: "{{ _dismiss_hit and (_dismiss_pkg | regex_search(_clock_pkg_pat)) }}"
+              dismiss_pkg: >-
+                {{ (state_attr(dismiss_sensor_entity, 'package')
+                    or state_attr(dismiss_sensor_entity, 'android.appInfo')
+                    or '') | lower }}
+              dismiss_received: "{{ wait.completed | default(false) }}"
+              dismiss_from_clock_app: "{{ dismiss_received and (dismiss_pkg | regex_search(clock_app_package_regex)) }}"
 
               # After a removal, check current next alarm on the same sensor that triggered the ring
-              _curr_next: "{{ states(trigger.entity_id) if trigger and trigger.entity_id else '' }}"
-              _curr_next_ts: "{{ as_timestamp(_curr_next, default=0) }}"
-              _now2_ts: "{{ now().timestamp() }}"
-              _snooze_now: >-
-                {{ _dismiss_ok and (_curr_next_ts > _now2_ts) 
-                   and ((_curr_next_ts - _now2_ts) <= ((_snooze_thr_m | int) * 60)) }}
+              curr_next_iso: "{{ states(trigger.entity_id) if trigger and trigger.entity_id else '' }}"
+              curr_next_ts: "{{ as_timestamp(curr_next_iso, default=0) }}"
+              now2_ts: "{{ now().timestamp() }}"
+              snooze_active_now: >-
+                {{ dismiss_from_clock_app and (curr_next_ts > now2_ts)
+                   and ((curr_next_ts - now2_ts) <= ((snooze_window_minutes | int) * 60)) }}
 
           # If it looks like a snooze, stop and wait for the snoozed ring cycle to retrigger
           - choose:
-              - conditions: "{{ _snooze_now }}"
+              - conditions: "{{ snooze_active_now }}"
                 sequence:
                   - stop: "Alarm snoozed — skipping brief until next ring."
 
-          # Otherwise, it was a true dismiss: speak ~now (+2s buffer)
+          # Otherwise, true dismiss: speak after configurable post-dismiss delay; if no valid dismiss, keep the no-dismiss schedule.
           - variables:
-              _speak_at_ts: >-
-                {% if _dismiss_ok %}
-                  {{ now().timestamp() + 2 }}
+              speak_at_ts: >-
+                {% if dismiss_from_clock_app %}
+                  {{ now().timestamp() + (post_dismiss_delay_seconds | int) }}
                 {% else %}
-                  {{ _speak_at_ts }}
+                  {{ speak_at_ts }}
                 {% endif %}
 
   # --- Fetch today's events (and optional weather) ---
@@ -234,7 +236,7 @@ action:
     response_variable: agenda
 
   - choose:
-      - conditions: "{{ v_include_weather }}"
+      - conditions: "{{ include_weather }}"
         sequence:
           - service: weather.get_forecasts
             target:
@@ -256,7 +258,7 @@ action:
 
   # --- Flatten + @mention filter (case-insensitive), HA Jinja-safe ---
   - variables:
-      v_person_lc: "{{ (v_person | lower | trim) }}"
+      person_lc: "{{ (person_name | lower | trim) }}"
       events_flat: >-
         {% set ns = namespace(items=[]) %}
         {% for cal in agenda %}
@@ -265,11 +267,11 @@ action:
             {% for e in payload['events'] %}
               {% set summary = (e['summary'] if 'summary' in e else '') %}
               {% set s = summary | lower %}
-              {% set has_any_tag = (s | regex_search('@[\\w-]+')) if (v_excl_others) else false %}
-              {% set tagged_me = (v_excl_others and (v_person_lc|length > 0)
-                                   and (s | regex_search('(^|\\W)@' ~ v_person_lc ~ '(\\W|$)'))) %}
-              {% set tagged_all = (v_excl_others and (s | regex_search('(^|\\W)@all(\\W|$)'))) %}
-              {% set include = (not v_excl_others) or tagged_me or tagged_all or (not has_any_tag) %}
+              {% set has_any_tag = (s | regex_search('@[\\w-]+')) if (exclude_other_mentions) else false %}
+              {% set tagged_me = (exclude_other_mentions and (person_lc|length > 0)
+                                   and (s | regex_search('(^|\\W)@' ~ person_lc ~ '(\\W|$)'))) %}
+              {% set tagged_all = (exclude_other_mentions and (s | regex_search('(^|\\W)@all(\\W|$)'))) %}
+              {% set include = (not exclude_other_mentions) or tagged_me or tagged_all or (not has_any_tag) %}
               {% if include %}
                 {% set start = e['start'] %}
                 {% set all_day = (start is string and start|length == 10) %}
@@ -286,7 +288,7 @@ action:
             {% endfor %}
           {% endif %}
         {% endfor %}
-        {{ (ns.items | sort(attribute='sort_key'))[: (v_max_events | int) ] }}
+        {{ (ns.items | sort(attribute='sort_key'))[: (max_events | int) ] }}
 
   # --- De-duplicate events by (lowercased summary + start time) ---
   - variables:
@@ -304,9 +306,9 @@ action:
   # --- LLM prompt + retries (delay is AFTER this so we don't double-wait) ---
   - variables:
       llm_prompt: >-
-        You are generating a short morning briefing to be spoken by Alexa{% if v_person|trim %} to {{ v_person }}{% endif %}.
+        You are generating a short morning briefing to be spoken by Alexa{% if person_name|trim %} to {{ person_name }}{% endif %}.
         Use British date/time conventions.
-        {% if v_extra|trim %}Additional instructions: {{ v_extra }}{% endif %}
+        {% if extra_instructions|trim %}Additional instructions: {{ extra_instructions }}{% endif %}
         Input data is JSON:
         {
           "date_iso": "{{ now().date().isoformat() }}",
@@ -314,7 +316,7 @@ action:
           "weather_today": {{ today_forecast | tojson }}
         }
         Rules:
-        - Start with weekday and date{{ ' and a one-line weather headline (temp highs/lows; mention rain chance if present)' if v_include_weather else '' }}.
+        - Start with weekday and date{{ ' and a one-line weather headline (temp highs/lows; mention rain chance if present)' if include_weather else '' }}.
         - If weather_today is empty, omit the weather entirely.
         - List key events in chronological order with clear times (e.g., "at 08:30, GCSE Physics revision; at 11:00, dentist").
         - If multiple entries describe the same event (same time and similar title), mention it once (deduplicate).
@@ -330,7 +332,7 @@ action:
       until:
         - condition: template
           value_template: >-
-            {{ (repeat.index >= (v_max_tries | int)) or ((speech_final | default('') | trim) != '') }}
+            {{ (repeat.index >= (retry_attempts | int)) or ((speech_final | default('') | trim) != '') }}
       sequence:
         - service: conversation.process
           data:
@@ -354,14 +356,14 @@ action:
               sequence:
                 - delay:
                     milliseconds: >-
-                      {{ (v_base_delay_ms | int) * (2 ** (repeat.index - 1)) }}
+                      {{ (retry_base_delay_ms | int) * (2 ** (repeat.index - 1)) }}
 
   # --- Fallback text ---
   - variables:
       speech_basic: >-
         {% set parts = [] %}
-        {% set greeting = 'Morning' ~ ( ' ' ~ v_person if v_person|trim else '' ) ~ '.' %}
-        {% if v_include_weather and today_forecast %}
+        {% set greeting = 'Morning' ~ ( ' ' ~ person_name if person_name|trim else '' ) ~ '.' %}
+        {% if include_weather and today_forecast %}
           {% set cond = today_forecast.condition | default('') %}
           {% set hi = today_forecast.temperature | default('?') %}
           {% set lo = today_forecast.templow | default('?') %}
@@ -388,9 +390,9 @@ action:
 
   # --- Final snooze guard (works even without dismiss sensor) ---
   - variables:
-      _min_next_delta: >-
+      min_next_alarm_delta: >-
         {% set deltas = [] %}
-        {% for s in _sensors %}
+        {% for s in alarm_entities %}
           {% set state = states(s) %}
           {% set ts = as_timestamp(state, default=0) %}
           {% if ts > 0 %}
@@ -401,20 +403,20 @@ action:
 
   - condition: template
     value_template: >-
-      {{ not (_min_next_delta > 0 and _min_next_delta <= ((_snooze_thr_m | int) * 60)) }}
+      {{ not (min_next_alarm_delta > 0 and min_next_alarm_delta <= ((snooze_window_minutes | int) * 60)) }}
 
   # --- Delay until intended speak time (remaining time only), then speak on Alexa ---
   - variables:
-      _delay_left_s: "{{ max(0, (_speak_at_ts - now().timestamp()) | int) }}"
+      remaining_delay_seconds: "{{ max(0, (speak_at_ts - now().timestamp()) | int) }}"
   - choose:
-      - conditions: "{{ _delay_left_s > 0 }}"
+      - conditions: "{{ remaining_delay_seconds > 0 }}"
         sequence:
           - delay:
-              seconds: "{{ _delay_left_s }}"
+              seconds: "{{ remaining_delay_seconds }}"
 
   - service: notify.alexa_media
     data:
       target: !input alexa_targets
       message: "{{ speech[:790] }}"
       data:
-        type: "{{ v_tts_mode }}"
+        type: "{{ tts_mode }}"
