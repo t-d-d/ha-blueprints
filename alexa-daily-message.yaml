@@ -1,10 +1,10 @@
 blueprint:
-  name: Alexa Alarm Brief
+  name: My Daily Briefing — Alarm Calendar & Weather (Echo + Any TTS)
   description: >
-    Speak a short morning brief on Alexa when an alarm rings (first ring) or after final dismiss.
-    Works with sensor.*_next_alarm from Alexa Media Player (Echo) and Android HA Companion (phones).
-    Optionally wait for Android Companion “Last Removed Notification” (dismiss) with timeout fallback.
-    Optional weather; OpenAI Conversation formatting with retries + fallback; cooldown (under “Advanced”).
+    Speaks today’s calendar (optional weather & LLM) when your phone/Echo alarm fires.
+    Works with Echo via Alexa Media Player or any speaker via a TTS engine (e.g., Piper).
+    Snooze-aware; supports @mentions (e.g., @Ana, @all). LLM agent is optional.
+    NEW: optional set/restore speaker volume before/after speaking.
   domain: automation
 
   input:
@@ -15,16 +15,14 @@ blueprint:
       selector:
         entity:
           multiple: true
-          # If your entities don't show up, remove the filter block below.
           filter:
             - domain: sensor
               device_class: timestamp
-              integration: mobile_app      # Android Companion app
+              integration: mobile_app
             - domain: sensor
               device_class: timestamp
-              integration: alexa_media     # Alexa Media Player
+              integration: alexa_media
 
-    # Optional: phone dismiss sensor (Companion App → Notification sensors → Last Removed Notification)
     dismiss_sensor:
       name: Phone 'Last Removed Notification' sensor (optional)
       description: "sensor.<phone>_last_removed_notification — used to speak after DISMISS; falls back if missing/timeout."
@@ -40,16 +38,48 @@ blueprint:
       selector:
         boolean: {}
 
-    alexa_targets:
-      name: Alexa device(s) to speak on
-      description: "Echo devices from Alexa Media Player."
+    # One combined targets list — Echo + other media players
+    speak_targets:
+      name: Speakers (any)
+      description: "Pick any media_player(s): Echo, Sonos, Nest, Chromecast, etc."
       selector:
         entity:
+          domain: media_player
           multiple: true
-          # If your Echoes don't appear, remove the filter block below.
-          filter:
-            - domain: media_player
-              integration: alexa_media
+
+    # Optional engine for non-Alexa targets (Piper, Google Cloud, Polly, etc.)
+    tts_engine:
+      name: TTS engine for non-Alexa (optional)
+      description: "Required only for non-Alexa players. Example: tts.piper"
+      default: ""
+      selector:
+        entity:
+          domain: tts
+
+    # --- NEW: Volume control ---
+    set_volume:
+      name: Set speaker volume
+      description: "If on, set volume for all selected players before speaking."
+      default: false
+      selector:
+        boolean: {}
+
+    speak_volume:
+      name: Speaking volume
+      description: "0.00–1.00 (used only if 'Set speaker volume' is on)."
+      default: 0.35
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+          mode: slider
+
+    restore_volume:
+      name: Restore previous volume after speaking
+      default: true
+      selector:
+        boolean: {}
 
     calendars:
       name: Calendars to include
@@ -58,7 +88,6 @@ blueprint:
           domain: calendar
           multiple: true
 
-    # Weather is optional: if set, a headline is included
     weather_entity:
       name: Weather entity (optional)
       default: ""
@@ -87,9 +116,9 @@ blueprint:
         boolean: {}
 
     openai_agent:
-      name: Conversation agent (OpenAI Conversation)
-      description: "Usually conversation.openai"
-      default: conversation.openai
+      name: LLM agent (optional)
+      description: "Select your Conversation agent (e.g., conversation.openai). Leave blank to skip LLM and use fallback narration."
+      default: ""
       selector:
         entity:
           domain: conversation
@@ -98,27 +127,28 @@ blueprint:
     advanced:
       name: Advanced (optional)
       description: >
-        Paste YAML or JSON with any of these fields (all optional; defaults shown):
+        Paste YAML/JSON with fields (defaults shown):
 
-        cooldown_minutes (int, default 3)
-        snooze_window_minutes (int, default 20)           # ≤ this looks like a snooze
-        pre_ring_grace_seconds (int, default 5)           # allow sensor flip up to 5s BEFORE alarm time
-        after_ring_window_seconds (int, default 120)      # accept sensor updates this long AFTER alarm time
-        no_dismiss_delay_seconds (int, default 30)        # if no dismiss, speak this long after alarm time
-        dismiss_wait_timeout_seconds (int, default 60)    # wait up to this for 'Last Removed Notification'
-        post_dismiss_delay_seconds (int, default 2)       # delay after a valid dismiss before speaking
-        clock_app_package_regex (str, default "deskclock|clockpackage|oneplus.deskclock|android.deskclock")
-        tts_mode (str: "tts" or "announce", default "tts")
-        max_events (int, default 12)
-        retry_attempts (int, default 3)
-        retry_base_delay_ms (int, default 1200)
+        cooldown_minutes: 3
+        snooze_window_minutes: 20
+        pre_ring_grace_seconds: 5
+        after_ring_window_seconds: 120
+        no_dismiss_delay_seconds: 30
+        dismiss_wait_timeout_seconds: 60
+        post_dismiss_delay_seconds: 5
+        clock_app_package_regex: "deskclock|clockpackage|oneplus.deskclock|android.deskclock"
+        tts_mode: "tts"     # Alexa: "tts" or "announce"
+        max_events: 12
+        retry_attempts: 3
+        retry_base_delay_ms: 1200
 
-        # Debug switches (for isolating crashes/restarts)
-        debug_disable_tts (bool, default false)           # when true, skip Alexa TTS step
-        debug_disable_llm (bool, default false)           # when true, skip LLM call (use fallback speech)
+        # Debug/timing:
+        debug_disable_tts: false         # skip playback entirely
+        debug_disable_llm: false         # skip LLM (use fallback text)
+        llm_after_delay: true            # run LLM after the final delay (safer)
 
         Example (YAML):
-          cooldown_minutes: 2
+          cooldown_minutes: 1
           snooze_window_minutes: 15
           pre_ring_grace_seconds: 5
           after_ring_window_seconds: 180
@@ -130,6 +160,7 @@ blueprint:
           max_events: 10
           debug_disable_tts: false
           debug_disable_llm: false
+          llm_after_delay: true
       default: {}
       selector:
         object: {}
@@ -137,12 +168,10 @@ blueprint:
 mode: single
 max_exceeded: silent
 
-# Trigger: any selected next-alarm sensor changes
 trigger:
   - platform: state
     entity_id: !input alarm_sensors
 
-# Root-scope variables (simple inputs only)
 variables:
   person_name: !input person_name
   extra_instructions: !input extra_instructions
@@ -150,11 +179,18 @@ variables:
   first_ring_mode: !input first_ring_mode
 
 action:
-  # --- Read Advanced + gate (first-ring vs final-dismiss) + set initial speak time ---
+  # --- Read Advanced + gate ---
   - variables:
       adv: !input advanced
       alarm_entities: !input alarm_sensors
       dismiss_sensor_entity: !input dismiss_sensor
+      agent_entity: !input openai_agent
+      weather_key: !input weather_entity
+
+      # Volume inputs
+      set_volume: !input set_volume
+      speak_volume: !input speak_volume
+      restore_volume: !input restore_volume
 
       cooldown_minutes: "{{ adv.cooldown_minutes | default(3) }}"
       snooze_window_minutes: "{{ adv.snooze_window_minutes | default(20) }}"
@@ -162,7 +198,7 @@ action:
       after_ring_window_seconds: "{{ adv.after_ring_window_seconds | default(120) }}"
       no_dismiss_delay_seconds: "{{ adv.no_dismiss_delay_seconds | default(30) }}"
       dismiss_wait_timeout_seconds: "{{ adv.dismiss_wait_timeout_seconds | default(60) }}"
-      post_dismiss_delay_seconds: "{{ adv.post_dismiss_delay_seconds | default(2) }}"
+      post_dismiss_delay_seconds: "{{ adv.post_dismiss_delay_seconds | default(5) }}"
       clock_app_package_regex: "{{ adv.clock_app_package_regex | default('deskclock|clockpackage|oneplus.deskclock|android.deskclock') }}"
       tts_mode: "{{ adv.tts_mode | default('tts') }}"
       max_events: "{{ adv.max_events | default(12) }}"
@@ -170,6 +206,7 @@ action:
       retry_base_delay_ms: "{{ adv.retry_base_delay_ms | default(1200) }}"
       debug_disable_tts: "{{ adv.debug_disable_tts | default(false) }}"
       debug_disable_llm: "{{ adv.debug_disable_llm | default(false) }}"
+      llm_after_delay: "{{ adv.llm_after_delay | default(true) }}"
 
       last_run_ts: "{{ as_timestamp(state_attr(this.entity_id, 'last_triggered') or 0) }}"
       cooldown_ok: "{{ (now().timestamp() - (last_run_ts | float(0))) > ((cooldown_minutes | int) * 60) }}"
@@ -189,13 +226,12 @@ action:
       ok_final_dismiss: "{{ (not first_ring_mode) and in_ring_window and (not looks_like_snooze) }}"
       should_run: "{{ (ok_first_ring or ok_final_dismiss) and cooldown_ok }}"
 
-      # Initial target speak time (used ONLY if we don't get a real dismiss)
       speak_at_ts: "{{ (prev_alarm_ts + (no_dismiss_delay_seconds | int)) if (ok_first_ring or ok_final_dismiss) else now_ts }}"
 
   - condition: template
     value_template: "{{ should_run }}"
 
-  # --- Optional wait: hold for a real DISMISS (via wait_template; no entity_id to validate) ---
+  # --- Optional wait for real dismiss (via wait_template; no entity_id validation) ---
   - choose:
       - conditions: "{{ dismiss_sensor_entity | string != '' }}"
         sequence:
@@ -213,8 +249,6 @@ action:
           - variables:
               dismiss_received: "{{ wait.completed | default(false) }}"
               dismiss_from_clock_app: "{{ dismiss_received }}"
-
-              # After removal, check current next alarm on the same sensor that triggered the ring
               curr_next_iso: "{{ states(trigger.entity_id) if trigger and trigger.entity_id else '' }}"
               curr_next_ts: "{{ as_timestamp(curr_next_iso, default=0) }}"
               now2_ts: "{{ now().timestamp() }}"
@@ -222,13 +256,11 @@ action:
                 {{ dismiss_from_clock_app and (curr_next_ts > now2_ts)
                    and ((curr_next_ts - now2_ts) <= ((snooze_window_minutes | int) * 60)) }}
 
-          # If it looks like a snooze, stop and wait for the snoozed ring cycle to retrigger
           - choose:
               - conditions: "{{ snooze_active_now }}"
                 sequence:
-                  - stop: "Alarm snoozed — skipping brief until next ring."
+                  - stop: "Alarm snoozed — skipping update until next ring."
 
-          # Otherwise, true dismiss: speak after configurable post-dismiss delay; if no valid dismiss, keep the no-dismiss schedule.
           - variables:
               speak_at_ts: >-
                 {% if dismiss_from_clock_app %}
@@ -241,7 +273,6 @@ action:
   - variables:
       start_dt: "{{ today_at('00:00:00') }}"
       end_dt:   "{{ as_datetime(as_timestamp(today_at('00:00:00')) + 86400) }}"
-      weather_key: !input weather_entity
 
   - service: calendar.get_events
     target:
@@ -271,7 +302,7 @@ action:
       - variables:
           today_forecast: {}
 
-  # --- Flatten + @mention filter (case-insensitive), HA Jinja-safe ---
+  # --- Flatten + @mention filter (case-insensitive) ---
   - variables:
       person_lc: "{{ (person_name | lower | trim) }}"
       events_flat: >-
@@ -305,7 +336,6 @@ action:
         {% endfor %}
         {{ (ns.items | sort(attribute='sort_key'))[: (max_events | int) ] }}
 
-  # --- De-duplicate events by (lowercased summary + start time) ---
   - variables:
       events_dedup: >-
         {% set ns = namespace(items=[], seen=[]) %}
@@ -318,10 +348,10 @@ action:
         {% endfor %}
         {{ ns.items }}
 
-  # --- LLM prompt + retries (skippable via debug flag) ---
+  # --- Build prompt + (optional) LLM ---
   - variables:
       llm_prompt: >-
-        You are generating a short morning briefing to be spoken by Alexa{% if person_name|trim %} to {{ person_name }}{% endif %}.
+        You are generating a short morning update to be spoken{% if person_name|trim %} to {{ person_name }}{% endif %}.
         Use British date/time conventions.
         {% if extra_instructions|trim %}Additional instructions: {{ extra_instructions }}{% endif %}
         Input data is JSON:
@@ -333,36 +363,35 @@ action:
         Rules:
         - Start with weekday and date{{ ' and a one-line weather headline (temp highs/lows; mention rain chance if present)' if today_forecast else '' }}.
         - If weather_today is empty, omit the weather entirely.
-        - List key events in chronological order with clear times (e.g., "at 08:30, GCSE Physics revision; at 11:00, dentist").
-        - If multiple entries describe the same event (same time and similar title), mention it once (deduplicate).
-        - For all-day events just say "(all day)".
-        - If there are no events, say that explicitly and give a brief encouragement.
-        - Keep to about 3–6 short sentences. No markup; plain text only.
+        - List key events in chronological order with clear times.
+        - If duplicates describe the same event/time, mention it once.
+        - For all-day events, say "(all day)".
+        - If no events, say so with a brief encouragement.
+        - Keep to ~3–6 short sentences. Plain text only.
         - If no name is provided, do not address the listener by name.
 
       speech_final: ""
+      retry_attempts: "{{ retry_attempts }}"
+      retry_base_delay_ms: "{{ retry_base_delay_ms }}"
+
   - choose:
-      - conditions: "{{ not debug_disable_llm }}"
+      - conditions: "{{ (agent_entity | string != '') and (not llm_after_delay) and (not debug_disable_llm) }}"
         sequence:
           - repeat:
               until:
                 - condition: template
-                  value_template: >-
-                    {{ (repeat.index >= (retry_attempts | int)) or ((speech_final | default('') | trim) != '') }}
+                  value_template: "{{ (repeat.index >= (retry_attempts | int)) or ((speech_final | default('') | trim) != '') }}"
               sequence:
                 - service: conversation.process
                   data:
-                    agent_id: !input openai_agent
+                    agent_id: "{{ agent_entity }}"
                     text: "{{ llm_prompt }}"
                   response_variable: llm
-
                 - variables:
                     speech_try: >-
                       {{ llm.response.speech.plain.speech
-                         if llm is defined and llm.response is defined
-                         and llm.response.speech is defined and llm.response.speech.plain is defined
+                         if llm and llm.response and llm.response.speech and llm.response.speech.plain
                          else '' }}
-
                 - choose:
                     - conditions: "{{ speech_try | trim != '' }}"
                       sequence:
@@ -371,14 +400,67 @@ action:
                     - conditions: "{{ speech_try | trim == '' }}"
                       sequence:
                         - delay:
-                            milliseconds: >-
-                              {{ (retry_base_delay_ms | int) * (2 ** (repeat.index - 1)) }}
+                            milliseconds: "{{ (retry_base_delay_ms | int) * (2 ** (repeat.index - 1)) }}"
     default: []
 
-  # --- Fallback text and final speech selection ---
+  # --- Delay until speak time ---
   - variables:
-      tts_mode: "{{ tts_mode }}"
-      speech_basic: >-
+      remaining_delay_seconds: "{{ max(0, (speak_at_ts - now().timestamp()) | int) }}"
+  - choose:
+      - conditions: "{{ remaining_delay_seconds > 0 }}"
+        sequence:
+          - delay:
+              seconds: "{{ remaining_delay_seconds }}"
+
+  # Post-delay snooze guard
+  - variables:
+      min_next_alarm_delta: >-
+        {% set deltas = [] %}
+        {% for s in alarm_entities %}
+          {% set state = states(s) %}
+          {% set ts = as_timestamp(state, default=0) %}
+          {% if ts > 0 %}
+            {% set deltas = deltas + [ ts - now().timestamp() ] %}
+          {% endif %}
+        {% endfor %}
+        {{ (deltas | min) if (deltas | count) > 0 else 999999 }}
+
+  - condition: template
+    value_template: "{{ not (min_next_alarm_delta > 0 and min_next_alarm_delta <= ((snooze_window_minutes | int) * 60)) }}"
+
+  # Safe mode: run LLM AFTER delay (optional)
+  - choose:
+      - conditions: "{{ (agent_entity | string != '') and llm_after_delay and (not debug_disable_llm) }}"
+        sequence:
+          - repeat:
+              until:
+                - condition: template
+                  value_template: "{{ (repeat.index >= (retry_attempts | int)) or ((speech_final | default('') | trim) != '') }}"
+              sequence:
+                - service: conversation.process
+                  data:
+                    agent_id: "{{ agent_entity }}"
+                    text: "{{ llm_prompt }}"
+                  response_variable: llm
+                - variables:
+                    speech_try: >-
+                      {{ llm.response.speech.plain.speech
+                         if llm and llm.response and llm.response.speech and llm.response.speech.plain
+                         else '' }}
+                - choose:
+                    - conditions: "{{ speech_try | trim != '' }}"
+                      sequence:
+                        - variables:
+                            speech_final: "{{ speech_try }}"
+                    - conditions: "{{ speech_try | trim == '' }}"
+                      sequence:
+                        - delay:
+                            milliseconds: "{{ (retry_base_delay_ms | int) * (2 ** (repeat.index - 1)) }}"
+    default: []
+
+  # --- Fallback + final speech ---
+  - variables:
+      final_speech_fallback: >-
         {% set parts = [] %}
         {% set greeting = 'Morning' ~ ( ' ' ~ person_name if person_name|trim else '' ) ~ '.' %}
         {% if today_forecast %}
@@ -403,41 +485,165 @@ action:
           {% endfor %}
         {% endif %}
         {{ (parts | join(' '))[:790] }}
-      speech: "{{ (speech_final | default('') | trim) if (speech_final | default('') | trim) != '' else speech_basic }}"
+      speech: "{{ (speech_final | default('') | trim) if (speech_final | default('') | trim) != '' else final_speech_fallback }}"
 
-  # --- Final snooze guard (works even without dismiss sensor) ---
+  # --- Split speak_targets into Alexa vs non-Alexa ---
   - variables:
-      min_next_alarm_delta: >-
-        {% set deltas = [] %}
-        {% for s in alarm_entities %}
-          {% set state = states(s) %}
-          {% set ts = as_timestamp(state, default=0) %}
-          {% if ts > 0 %}
-            {% set deltas = deltas + [ ts - now().timestamp() ] %}
+      all_targets: !input speak_targets
+      alexa_targets: >-
+        {% set out = [] %}
+        {% for e in all_targets %}
+          {% set dev = device_id(e) %}
+          {% set ids = device_attr(dev, 'identifiers') or [] %}
+          {% set is_alexa = false %}
+          {% for pair in ids %}
+            {% set p0 = (pair[0] if (pair is sequence and (pair | count) > 0) else '') %}
+            {% if p0 == 'alexa_media' %}
+              {% set is_alexa = true %}
+            {% endif %}
+          {% endfor %}
+          {% if is_alexa %}
+            {% set out = out + [e] %}
           {% endif %}
         {% endfor %}
-        {{ (deltas | min) if (deltas | count) > 0 else 999999 }}
+        {{ out }}
+      generic_targets: >-
+        {% set out = [] %}
+        {% for e in all_targets %}
+          {% set dev = device_id(e) %}
+          {% set ids = device_attr(dev, 'identifiers') or [] %}
+          {% set is_alexa = false %}
+          {% for pair in ids %}
+            {% set p0 = (pair[0] if (pair is sequence and (pair | count) > 0) else '') %}
+            {% if p0 == 'alexa_media' %}
+              {% set is_alexa = true %}
+            {% endif %}
+          {% endfor %}
+          {% if not is_alexa %}
+            {% set out = out + [e] %}
+          {% endif %}
+        {% endfor %}
+        {{ out }}
+      tts_engine_entity: !input tts_engine
 
-  - condition: template
-    value_template: >-
-      {{ not (min_next_alarm_delta > 0 and min_next_alarm_delta <= ((snooze_window_minutes | int) * 60)) }}
-
-  # --- Delay until intended speak time (remaining time only), then speak on Alexa ---
+  # --- Preflight validation & user feedback ---
   - variables:
-      remaining_delay_seconds: "{{ max(0, (speak_at_ts - now().timestamp()) | int) }}"
-  - choose:
-      - conditions: "{{ remaining_delay_seconds > 0 }}"
-        sequence:
-          - delay:
-              seconds: "{{ remaining_delay_seconds }}"
+      alexa_service_ok: "{{ has_service('notify', 'alexa_media') }}"
+      alexa_count: "{{ alexa_targets | count }}"
+      generic_count: "{{ generic_targets | count }}"
+      tts_engine_ok: "{{ tts_engine_entity | string != '' }}"
 
   - choose:
-      - conditions: "{{ not debug_disable_tts }}"
+      - conditions: "{{ alexa_count > 0 and not alexa_service_ok }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Daily Briefing: Alexa TTS unavailable"
+              message: >-
+                You selected Alexa devices ({{ alexa_targets | join(', ') }}), but the
+                service notify.alexa_media is not available. Install/enable Alexa Media Player,
+                or remove those targets. Proceeding with non-Alexa targets only.
+
+  - choose:
+      - conditions: "{{ generic_count > 0 and not tts_engine_ok }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Daily Briefing: No TTS engine for non-Alexa"
+              message: >-
+                You selected non-Alexa players ({{ generic_targets | join(', ') }}), but no
+                TTS engine was set. Choose a TTS entity (e.g., tts.piper) in the automation.
+                Proceeding with Alexa targets only (if any).
+
+  - choose:
+      - conditions: >-
+          {{ not (
+              (alexa_count > 0 and alexa_service_ok)
+              or
+              (generic_count > 0 and tts_engine_ok)
+            ) }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Daily Briefing: No usable speakers"
+              message: >-
+                None of the selected speakers can be used:
+                Alexa service missing and/or no TTS engine for non-Alexa.
+                Update the automation’s outputs and try again.
+          - stop: "No usable speakers (see notification)."
+
+  # --- NEW: Capture current volumes & set speaking volume (if enabled) ---
+  - variables:
+      usable_targets: >-
+        {% set out = [] %}
+        {% if alexa_service_ok %}
+          {% for e in alexa_targets %}{% set out = out + [e] %}{% endfor %}
+        {% endif %}
+        {% if tts_engine_ok %}
+          {% for e in generic_targets %}{% set out = out + [e] %}{% endfor %}
+        {% endif %}
+        {{ out }}
+      prev_volumes: []
+
+  - choose:
+      - conditions: "{{ set_volume and (usable_targets | count) > 0 }}"
+        sequence:
+          - variables:
+              prev_volumes: >-
+                {% set out = [] %}
+                {% for e in usable_targets %}
+                  {% set v = state_attr(e, 'volume_level') %}
+                  {% if v is number %}
+                    {% set out = out + [ {'entity': e, 'level': v} ] %}
+                  {% endif %}
+                {% endfor %}
+                {{ out }}
+          - repeat:
+              for_each: "{{ usable_targets }}"
+              sequence:
+                - service: media_player.volume_set
+                  target:
+                    entity_id: "{{ repeat.item }}"
+                  data:
+                    volume_level: "{{ speak_volume }}"
+
+  # --- Speak on Alexa (alexa_media) ---
+  - choose:
+      - conditions: "{{ (not debug_disable_tts) and (alexa_count > 0) and alexa_service_ok }}"
         sequence:
           - service: notify.alexa_media
             data:
-              target: !input alexa_targets
+              target: "{{ alexa_targets }}"
               message: "{{ speech[:790] }}"
               data:
                 type: "{{ tts_mode }}"
+    default: []
+
+  # --- Speak on non-Alexa (generic TTS engine) ---
+  - choose:
+      - conditions: "{{ (not debug_disable_tts) and tts_engine_ok and (generic_count > 0) }}"
+        sequence:
+          - repeat:
+              for_each: "{{ generic_targets }}"
+              sequence:
+                - service: tts.speak
+                  target:
+                    entity_id: "{{ tts_engine_entity }}"
+                  data:
+                    media_player_entity_id: "{{ repeat.item }}"
+                    message: "{{ speech }}"
+    default: []
+
+  # --- NEW: Restore previous volumes (if captured) ---
+  - choose:
+      - conditions: "{{ set_volume and restore_volume and (prev_volumes | count) > 0 }}"
+        sequence:
+          - repeat:
+              for_each: "{{ prev_volumes }}"
+              sequence:
+                - service: media_player.volume_set
+                  target:
+                    entity_id: "{{ repeat.item.entity }}"
+                  data:
+                    volume_level: "{{ repeat.item.level }}"
     default: []
