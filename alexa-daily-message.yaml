@@ -11,16 +11,24 @@ blueprint:
     # --- Core (simple) ---
     alarm_sensors:
       name: Next-alarm sensors
-      description: "sensor.bedroom_echo_next_alarm, sensor.pixel_7_next_alarm, etc."
+      description: "Choose timestamp sensors like sensor.*_next_alarm from phones/Echos."
       selector:
         entity:
-          domain: sensor
           multiple: true
+          # If your entities don't show up, remove the filter block below.
+          filter:
+            - domain: sensor
+              device_class: timestamp
+              integration: mobile_app      # Android Companion app
+            - domain: sensor
+              device_class: timestamp
+              integration: alexa_media     # Alexa Media Player
 
     # Optional: phone dismiss sensor (Companion App → Notification sensors → Last Removed Notification)
     dismiss_sensor:
       name: Phone 'Last Removed Notification' sensor (optional)
       description: "sensor.<phone>_last_removed_notification — used to speak after DISMISS; falls back if missing/timeout."
+      default: ""
       selector:
         entity:
           domain: sensor
@@ -34,10 +42,14 @@ blueprint:
 
     alexa_targets:
       name: Alexa device(s) to speak on
+      description: "Echo devices from Alexa Media Player."
       selector:
         entity:
-          domain: media_player
           multiple: true
+          # If your Echoes don't appear, remove the filter block below.
+          filter:
+            - domain: media_player
+              integration: alexa_media
 
     calendars:
       name: Calendars to include
@@ -46,14 +58,10 @@ blueprint:
           domain: calendar
           multiple: true
 
-    include_weather:
-      name: Include weather
-      default: false
-      selector:
-        boolean: {}
-
+    # Weather is optional: if set, we'll include a headline
     weather_entity:
-      name: Weather entity (used only if Include weather = on)
+      name: Weather entity (optional)
+      default: ""
       selector:
         entity:
           domain: weather
@@ -132,7 +140,6 @@ trigger:
 variables:
   person_name: !input person_name
   extra_instructions: !input extra_instructions
-  include_weather: !input include_weather
   exclude_other_mentions: !input exclude_other_mentions
   first_ring_mode: !input first_ring_mode
 
@@ -182,7 +189,7 @@ action:
 
   # --- Optional wait: hold for a real DISMISS (Companion 'Last Removed Notification') ---
   - choose:
-      - conditions: "{{ dismiss_sensor_entity | default('') | string != '' }}"
+      - conditions: "{{ dismiss_sensor_entity | string != '' }}"
         sequence:
           - wait_for_trigger:
               - platform: state
@@ -226,6 +233,7 @@ action:
   - variables:
       start_dt: "{{ today_at('00:00:00') }}"
       end_dt:   "{{ as_datetime(as_timestamp(today_at('00:00:00')) + 86400) }}"
+      weather_key: !input weather_entity
 
   - service: calendar.get_events
     target:
@@ -236,7 +244,7 @@ action:
     response_variable: agenda
 
   - choose:
-      - conditions: "{{ include_weather }}"
+      - conditions: "{{ weather_key | string != '' }}"
         sequence:
           - service: weather.get_forecasts
             target:
@@ -245,7 +253,6 @@ action:
               type: daily
             response_variable: forecast
           - variables:
-              weather_key: !input weather_entity
               today_forecast: >-
                 {% set key = weather_key %}
                 {% if forecast and forecast is mapping and (key in forecast)
@@ -259,6 +266,7 @@ action:
   # --- Flatten + @mention filter (case-insensitive), HA Jinja-safe ---
   - variables:
       person_lc: "{{ (person_name | lower | trim) }}"
+      max_events: "{{ adv.max_events | default(12) }}"
       events_flat: >-
         {% set ns = namespace(items=[]) %}
         {% for cal in agenda %}
@@ -305,6 +313,8 @@ action:
 
   # --- LLM prompt + retries (delay is AFTER this so we don't double-wait) ---
   - variables:
+      retry_attempts: "{{ adv.retry_attempts | default(3) }}"
+      retry_base_delay_ms: "{{ adv.retry_base_delay_ms | default(1200) }}"
       llm_prompt: >-
         You are generating a short morning briefing to be spoken by Alexa{% if person_name|trim %} to {{ person_name }}{% endif %}.
         Use British date/time conventions.
@@ -316,7 +326,7 @@ action:
           "weather_today": {{ today_forecast | tojson }}
         }
         Rules:
-        - Start with weekday and date{{ ' and a one-line weather headline (temp highs/lows; mention rain chance if present)' if include_weather else '' }}.
+        - Start with weekday and date{{ ' and a one-line weather headline (temp highs/lows; mention rain chance if present)' if today_forecast else '' }}.
         - If weather_today is empty, omit the weather entirely.
         - List key events in chronological order with clear times (e.g., "at 08:30, GCSE Physics revision; at 11:00, dentist").
         - If multiple entries describe the same event (same time and similar title), mention it once (deduplicate).
@@ -360,10 +370,11 @@ action:
 
   # --- Fallback text ---
   - variables:
+      tts_mode: "{{ adv.tts_mode | default('tts') }}"
       speech_basic: >-
         {% set parts = [] %}
         {% set greeting = 'Morning' ~ ( ' ' ~ person_name if person_name|trim else '' ) ~ '.' %}
-        {% if include_weather and today_forecast %}
+        {% if today_forecast %}
           {% set cond = today_forecast.condition | default('') %}
           {% set hi = today_forecast.temperature | default('?') %}
           {% set lo = today_forecast.templow | default('?') %}
@@ -390,6 +401,7 @@ action:
 
   # --- Final snooze guard (works even without dismiss sensor) ---
   - variables:
+      snooze_window_minutes: "{{ adv.snooze_window_minutes | default(20) }}"
       min_next_alarm_delta: >-
         {% set deltas = [] %}
         {% for s in alarm_entities %}
