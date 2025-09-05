@@ -58,7 +58,7 @@ blueprint:
           domain: calendar
           multiple: true
 
-    # Weather is optional: if set, we'll include a headline
+    # Weather is optional: if set, a headline is included
     weather_entity:
       name: Weather entity (optional)
       default: ""
@@ -188,13 +188,11 @@ action:
     value_template: "{{ should_run }}"
 
   # --- Optional wait: hold for a real DISMISS (via wait_template; no entity_id to validate) ---
-  - variables:
-      _dismiss_start_state: >-
-        {{ states(dismiss_sensor_entity) if (dismiss_sensor_entity | string != '') else '' }}
-
   - choose:
       - conditions: "{{ dismiss_sensor_entity | string != '' }}"
         sequence:
+          - variables:
+              _dismiss_start_state: "{{ states(dismiss_sensor_entity) }}"
           - wait_template: >-
               {{ states(dismiss_sensor_entity) != _dismiss_start_state
                  and ((state_attr(dismiss_sensor_entity, 'package')
@@ -268,7 +266,6 @@ action:
   # --- Flatten + @mention filter (case-insensitive), HA Jinja-safe ---
   - variables:
       person_lc: "{{ (person_name | lower | trim) }}"
-      max_events: "{{ adv.max_events | default(12) }}"
       events_flat: >-
         {% set ns = namespace(items=[]) %}
         {% for cal in agenda %}
@@ -315,8 +312,6 @@ action:
 
   # --- LLM prompt + retries (delay is AFTER this so we don't double-wait) ---
   - variables:
-      retry_attempts: "{{ adv.retry_attempts | default(3) }}"
-      retry_base_delay_ms: "{{ adv.retry_base_delay_ms | default(1200) }}"
       llm_prompt: >-
         You are generating a short morning briefing to be spoken by Alexa{% if person_name|trim %} to {{ person_name }}{% endif %}.
         Use British date/time conventions.
@@ -339,6 +334,8 @@ action:
 
   - variables:
       speech_final: ""
+      retry_attempts: "{{ adv.retry_attempts | default(3) }}"
+      retry_base_delay_ms: "{{ adv.retry_base_delay_ms | default(1200) }}"
 
   - repeat:
       until:
@@ -403,7 +400,6 @@ action:
 
   # --- Final snooze guard (works even without dismiss sensor) ---
   - variables:
-      snooze_window_minutes: "{{ adv.snooze_window_minutes | default(20) }}"
       min_next_alarm_delta: >-
         {% set deltas = [] %}
         {% for s in alarm_entities %}
