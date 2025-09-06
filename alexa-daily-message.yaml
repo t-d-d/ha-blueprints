@@ -536,7 +536,7 @@ action:
 
   # --- Preflight validation & user feedback ---
   - variables:
-      alexa_service_ok: "{{ has_service('notify', 'alexa_media') }}"
+      alexa_service_ok: "{{ (integration_entities('alexa_media') | count) > 0 }}"
       alexa_count: "{{ alexa_targets | count }}"
       generic_count: "{{ generic_targets | count }}"
       tts_engine_ok: "{{ tts_engine_entity | string != '' }}"
