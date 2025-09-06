@@ -495,63 +495,42 @@ action:
         {{ (parts | join(' '))[:790] }}
       speech: "{{ (speech_final | default('') | trim) if (speech_final | default('') | trim) != '' else final_speech_fallback }}"
 
-  # --- Split speak_targets into Alexa vs non-Alexa ---
+  # --- Split speak_targets into Alexa vs non-Alexa (robust) ---
   - variables:
       all_targets: !input speak_targets
+      # all entity_ids created by the Alexa Media Player integration
+      alexa_all: "{{ integration_entities('alexa_media') | select('match', '^media_player\\.') | list }}"
       alexa_targets: >-
         {% set out = [] %}
         {% for e in all_targets %}
-          {% set dev = device_id(e) %}
-          {% set ids = device_attr(dev, 'identifiers') or [] %}
-          {% set is_alexa = false %}
-          {% for pair in ids %}
-            {% set p0 = (pair[0] if (pair is sequence and (pair | count) > 0) else '') %}
-            {% if p0 == 'alexa_media' %}
-              {% set is_alexa = true %}
-            {% endif %}
-          {% endfor %}
-          {% if is_alexa %}
-            {% set out = out + [e] %}
-          {% endif %}
+          {% if e in alexa_all %}{% set out = out + [e] %}{% endif %}
         {% endfor %}
         {{ out }}
       generic_targets: >-
         {% set out = [] %}
         {% for e in all_targets %}
-          {% set dev = device_id(e) %}
-          {% set ids = device_attr(dev, 'identifiers') or [] %}
-          {% set is_alexa = false %}
-          {% for pair in ids %}
-            {% set p0 = (pair[0] if (pair is sequence and (pair | count) > 0) else '') %}
-            {% if p0 == 'alexa_media' %}
-              {% set is_alexa = true %}
-            {% endif %}
-          {% endfor %}
-          {% if not is_alexa %}
-            {% set out = out + [e] %}
-          {% endif %}
+          {% if e not in alexa_all %}{% set out = out + [e] %}{% endif %}
         {% endfor %}
         {{ out }}
       tts_engine_entity: !input tts_engine
-
+  
   # --- Preflight validation & user feedback ---
   - variables:
-      alexa_service_ok: "{{ (integration_entities('alexa_media') | count) > 0 }}"
+      alexa_integration_present: "{{ (alexa_all | count) > 0 }}"
       alexa_count: "{{ alexa_targets | count }}"
       generic_count: "{{ generic_targets | count }}"
       tts_engine_ok: "{{ tts_engine_entity | string != '' }}"
-
+  
   - choose:
-      - conditions: "{{ alexa_count > 0 and not alexa_service_ok }}"
+      - conditions: "{{ alexa_count > 0 and not alexa_integration_present }}"
         sequence:
           - service: persistent_notification.create
             data:
               title: "Daily Briefing: Alexa TTS unavailable"
               message: >-
-                You selected Alexa devices ({{ alexa_targets | join(', ') }}), but the
-                service notify.alexa_media is not available. Install/enable Alexa Media Player,
-                or remove those targets. Proceeding with non-Alexa targets only.
-
+                You selected Alexa devices ({{ alexa_targets | join(', ') }}), but the Alexa Media
+                integration wasn't detected. Install/enable it or remove those targets.
+  
   - choose:
       - conditions: "{{ generic_count > 0 and not tts_engine_ok }}"
         sequence:
@@ -559,14 +538,13 @@ action:
             data:
               title: "Daily Briefing: No TTS engine for non-Alexa"
               message: >-
-                You selected non-Alexa players ({{ generic_targets | join(', ') }}), but no
-                TTS engine was set. Choose a TTS entity (e.g., tts.piper) in the automation.
-                Proceeding with Alexa targets only (if any).
-
+                You selected non-Alexa players ({{ generic_targets | join(', ') }}), but no TTS engine
+                was set. Choose a TTS entity (e.g., tts.piper) in the automation.
+  
   - choose:
       - conditions: >-
           {{ not (
-              (alexa_count > 0 and alexa_service_ok)
+              (alexa_count > 0 and alexa_integration_present)
               or
               (generic_count > 0 and tts_engine_ok)
             ) }}
@@ -575,11 +553,10 @@ action:
             data:
               title: "Daily Briefing: No usable speakers"
               message: >-
-                None of the selected speakers can be used:
-                Alexa service missing and/or no TTS engine for non-Alexa.
-                Update the automation’s outputs and try again.
+                None of the selected speakers can be used. Fix Alexa Media for Echo or set a TTS engine
+                for non-Alexa players.
           - stop: "No usable speakers (see notification)."
-
+        
   # --- Capture current volumes & set speaking volume (if enabled) ---
   - variables:
       usable_targets: >-
