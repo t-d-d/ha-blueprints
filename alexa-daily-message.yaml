@@ -211,7 +211,6 @@ action:
       # --- Global debounce within this automation (across all selected sensors) ---
       last_start_ts: "{{ as_timestamp(state_attr(this.entity_id, 'last_triggered') or 0) }}"
       _age_since_last_start: "{{ now().timestamp() - (last_start_ts | float(0)) }}"
-      # Allow the very first trigger to start (age < 2s == this run)
       cooldown_ok: >-
         {% set cool = (cooldown_minutes | int) * 60 %}
         {% if _age_since_last_start < 2 %}
@@ -233,7 +232,6 @@ action:
       ok_first_ring: "{{ first_ring_mode and in_ring_window }}"
       ok_final_dismiss: "{{ (not first_ring_mode) and in_ring_window and (not looks_like_snooze) }}"
       should_run: "{{ (ok_first_ring or ok_final_dismiss) and cooldown_ok }}"
-      # Fallback speak time (if we never see a dismiss)
       speak_at_ts: "{{ (prev_alarm_ts + (no_dismiss_delay_seconds | int)) if (ok_first_ring or ok_final_dismiss) else now_ts }}"
 
   - condition: template
@@ -377,10 +375,7 @@ action:
         - If no events, say so with a brief encouragement.
         - Keep to ~3–6 short sentences. Plain text only.
         - If no name is provided, do not address the listener by name.
-
       speech_final: ""
-      retry_attempts: "{{ retry_attempts }}"
-      retry_base_delay_ms: "{{ retry_base_delay_ms }}"
 
   - choose:
       - conditions: "{{ (agent_entity | string != '') and (not llm_after_delay) and (not debug_disable_llm) }}"
@@ -423,15 +418,15 @@ action:
   # Post-delay snooze guard
   - variables:
       min_next_alarm_delta: >-
-        {% set deltas = [] %}
+        {% set ns = namespace(deltas=[]) %}
         {% for s in alarm_entities %}
           {% set state = states(s) %}
           {% set ts = as_timestamp(state, default=0) %}
           {% if ts > 0 %}
-            {% set deltas = deltas + [ ts - now().timestamp() ] %}
+            {% set ns.deltas = ns.deltas + [ ts - now().timestamp() ] %}
           {% endif %}
         {% endfor %}
-        {{ (deltas | min) if (deltas | count) > 0 else 999999 }}
+        {{ (ns.deltas | min) if (ns.deltas | count) > 0 else 999999 }}
 
   - condition: template
     value_template: "{{ not (min_next_alarm_delta > 0 and min_next_alarm_delta <= ((snooze_window_minutes | int) * 60)) }}"
@@ -469,37 +464,36 @@ action:
   # --- Fallback + final speech ---
   - variables:
       final_speech_fallback: >-
-        {% set parts = [] %}
+        {% set ns = namespace(parts=[]) %}
         {% set greeting = 'Morning' ~ ( ' ' ~ person_name if person_name|trim else '' ) ~ '.' %}
         {% if today_forecast %}
           {% set cond = today_forecast.condition | default('') %}
           {% set hi = today_forecast.temperature | default('?') %}
           {% set lo = today_forecast.templow | default('?') %}
-          {% set parts = parts + [ greeting ~ ' Today: ' ~ cond ~ ', high ' ~ hi ~ '°, low ' ~ lo ~ '°.' ] %}
+          {% set ns.parts = ns.parts + [ greeting ~ ' Today: ' ~ cond ~ ', high ' ~ hi ~ '°, low ' ~ lo ~ '°.' ] %}
         {% else %}
-          {% set parts = parts + [ greeting ] %}
+          {% set ns.parts = ns.parts + [ greeting ] %}
         {% endif %}
         {% if events_dedup | count == 0 %}
-          {% set parts = parts + ['No events in the calendar. Have a great day!'] %}
+          {% set ns.parts = ns.parts + ['No events in the calendar. Have a great day!'] %}
         {% else %}
-          {% set parts = parts + ['Here are your events:'] %}
+          {% set ns.parts = ns.parts + ['Here are your events:'] %}
           {% for e in events_dedup %}
             {% if e.all_day %}
               {% set line = e.summary ~ ' (all day)' %}
             {% else %}
               {% set line = (e.start[11:16]) ~ ': ' ~ e.summary %}
             {% endif %}
-            {% set parts = parts + [line] %}
+            {% set ns.parts = ns.parts + [line] %}
           {% endfor %}
         {% endif %}
-        {{ (parts | join(' '))[:790] }}
+        {{ (ns.parts | join(' '))[:790] }}
       speech: "{{ (speech_final | default('') | trim) if (speech_final | default('') | trim) != '' else final_speech_fallback }}"
 
   # --- Split speak_targets into Alexa vs non-Alexa (robust + namespace) ---
   - variables:
       all_targets: !input speak_targets
       alexa_all: "{{ integration_entities('alexa_media') | select('match', '^media_player\\.') | list }}"
-  
       alexa_targets: >-
         {% set ns = namespace(items=[]) %}
         {% for e in all_targets %}
@@ -508,7 +502,6 @@ action:
           {% endif %}
         {% endfor %}
         {{ ns.items }}
-  
       generic_targets: >-
         {% set ns = namespace(items=[]) %}
         {% for e in all_targets %}
@@ -517,7 +510,6 @@ action:
           {% endif %}
         {% endfor %}
         {{ ns.items }}
-  
       tts_engine_entity: !input tts_engine
 
   # --- Preflight validation & user feedback ---
@@ -526,7 +518,7 @@ action:
       alexa_count: "{{ alexa_targets | count }}"
       generic_count: "{{ generic_targets | count }}"
       tts_engine_ok: "{{ tts_engine_entity | string != '' }}"
-  
+
   - choose:
       - conditions: "{{ alexa_count > 0 and not alexa_integration_present }}"
         sequence:
@@ -536,7 +528,7 @@ action:
               message: >-
                 You selected Alexa devices ({{ alexa_targets | join(', ') }}), but the Alexa Media
                 integration wasn't detected. Install/enable it or remove those targets.
-  
+
   - choose:
       - conditions: "{{ generic_count > 0 and not tts_engine_ok }}"
         sequence:
@@ -546,7 +538,7 @@ action:
               message: >-
                 You selected non-Alexa players ({{ generic_targets | join(', ') }}), but no TTS engine
                 was set. Choose a TTS entity (e.g., tts.piper) in the automation.
-  
+
   - choose:
       - conditions: >-
           {{ not (
@@ -562,18 +554,22 @@ action:
                 None of the selected speakers can be used. Fix Alexa Media for Echo or set a TTS engine
                 for non-Alexa players.
           - stop: "No usable speakers (see notification)."
-        
+
   # --- Capture current volumes & set speaking volume (if enabled) ---
   - variables:
       usable_targets: >-
-        {% set out = [] %}
-        {% if alexa_service_ok %}
-          {% for e in alexa_targets %}{% set out = out + [e] %}{% endfor %}
+        {% set ns = namespace(items=[]) %}
+        {% if alexa_integration_present %}
+          {% for e in alexa_targets %}
+            {% set ns.items = ns.items + [e] %}
+          {% endfor %}
         {% endif %}
         {% if tts_engine_ok %}
-          {% for e in generic_targets %}{% set out = out + [e] %}{% endfor %}
+          {% for e in generic_targets %}
+            {% set ns.items = ns.items + [e] %}
+          {% endfor %}
         {% endif %}
-        {{ out }}
+        {{ ns.items }}
       prev_volumes: []
 
   - choose:
@@ -581,14 +577,14 @@ action:
         sequence:
           - variables:
               prev_volumes: >-
-                {% set out = [] %}
+                {% set ns = namespace(items=[]) %}
                 {% for e in usable_targets %}
                   {% set v = state_attr(e, 'volume_level') %}
                   {% if v is number %}
-                    {% set out = out + [ {'entity': e, 'level': v} ] %}
+                    {% set ns.items = ns.items + [ {'entity': e, 'level': v} ] %}
                   {% endif %}
                 {% endfor %}
-                {{ out }}
+                {{ ns.items }}
           - repeat:
               for_each: "{{ usable_targets }}"
               sequence:
@@ -600,7 +596,7 @@ action:
 
   # --- Speak on Alexa (alexa_media) ---
   - choose:
-      - conditions: "{{ (not debug_disable_tts) and (alexa_count > 0) and alexa_service_ok }}"
+      - conditions: "{{ (not debug_disable_tts) and (alexa_count > 0) and alexa_integration_present }}"
         sequence:
           - service: notify.alexa_media
             data:
