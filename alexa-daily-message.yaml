@@ -4,7 +4,7 @@ blueprint:
     Speaks today’s calendar (optional weather & LLM) when your phone/Echo alarm fires.
     Works with Echo via Alexa Media Player or any speaker via a TTS engine (e.g., Piper).
     Snooze-aware; supports @mentions (e.g., @Ana, @all). LLM agent is optional.
-    NEW: optional set/restore speaker volume before/after speaking.
+    Includes global debounce (cooldown) so multiple alarm sources for one person only speak once.
   domain: automation
 
   input:
@@ -56,7 +56,7 @@ blueprint:
         entity:
           domain: tts
 
-    # --- NEW: Volume control ---
+    # --- Volume control ---
     set_volume:
       name: Set speaker volume
       description: "If on, set volume for all selected players before speaking."
@@ -148,7 +148,7 @@ blueprint:
         llm_after_delay: true            # run LLM after the final delay (safer)
 
         Example (YAML):
-          cooldown_minutes: 1
+          cooldown_minutes: 2
           snooze_window_minutes: 15
           pre_ring_grace_seconds: 5
           after_ring_window_seconds: 180
@@ -208,30 +208,38 @@ action:
       debug_disable_llm: "{{ adv.debug_disable_llm | default(false) }}"
       llm_after_delay: "{{ adv.llm_after_delay | default(true) }}"
 
-      last_run_ts: "{{ as_timestamp(state_attr(this.entity_id, 'last_triggered') or 0) }}"
-      cooldown_ok: "{{ (now().timestamp() - (last_run_ts | float(0))) > ((cooldown_minutes | int) * 60) }}"
+      # --- Global debounce within this automation (across all selected sensors) ---
+      last_start_ts: "{{ as_timestamp(state_attr(this.entity_id, 'last_triggered') or 0) }}"
+      _age_since_last_start: "{{ now().timestamp() - (last_start_ts | float(0)) }}"
+      # Allow the very first trigger to start (age < 2s == this run)
+      cooldown_ok: >-
+        {% set cool = (cooldown_minutes | int) * 60 %}
+        {% if _age_since_last_start < 2 %}
+          true
+        {% else %}
+          {{ _age_since_last_start > cool }}
+        {% endif %}
 
+      # --- Ring window logic ---
       is_from_alarm_sensor: "{{ trigger.platform == 'state' and (trigger.entity_id in alarm_entities) }}"
       alarm_prev_iso: "{{ trigger.from_state.state if trigger.from_state else '' }}"
       alarm_next_iso: "{{ trigger.to_state.state   if trigger.to_state   else '' }}"
       prev_alarm_ts: "{{ as_timestamp(alarm_prev_iso, default=0) }}"
       next_alarm_ts: "{{ as_timestamp(alarm_next_iso, default=0) }}"
       now_ts: "{{ now().timestamp() }}"
-
       in_ring_window: "{{ is_from_alarm_sensor and (now_ts >= (prev_alarm_ts - (pre_ring_grace_seconds | int))) and (now_ts < (prev_alarm_ts + (after_ring_window_seconds | int))) }}"
       delta_seconds: "{{ (next_alarm_ts - prev_alarm_ts) if (next_alarm_ts and prev_alarm_ts) else 0 }}"
       looks_like_snooze: "{{ delta_seconds > 0 and delta_seconds <= ((snooze_window_minutes | int) * 60) }}"
-
       ok_first_ring: "{{ first_ring_mode and in_ring_window }}"
       ok_final_dismiss: "{{ (not first_ring_mode) and in_ring_window and (not looks_like_snooze) }}"
       should_run: "{{ (ok_first_ring or ok_final_dismiss) and cooldown_ok }}"
-
+      # Fallback speak time (if we never see a dismiss)
       speak_at_ts: "{{ (prev_alarm_ts + (no_dismiss_delay_seconds | int)) if (ok_first_ring or ok_final_dismiss) else now_ts }}"
 
   - condition: template
     value_template: "{{ should_run }}"
 
-  # --- Optional wait for real dismiss (via wait_template; no entity_id validation) ---
+  # --- Optional wait for real dismiss (via wait_template) ---
   - choose:
       - conditions: "{{ dismiss_sensor_entity | string != '' }}"
         sequence:
@@ -572,7 +580,7 @@ action:
                 Update the automation’s outputs and try again.
           - stop: "No usable speakers (see notification)."
 
-  # --- NEW: Capture current volumes & set speaking volume (if enabled) ---
+  # --- Capture current volumes & set speaking volume (if enabled) ---
   - variables:
       usable_targets: >-
         {% set out = [] %}
@@ -634,7 +642,7 @@ action:
                     message: "{{ speech }}"
     default: []
 
-  # --- NEW: Restore previous volumes (if captured) ---
+  # --- Restore previous volumes (if captured) ---
   - choose:
       - conditions: "{{ set_volume and restore_volume and (prev_volumes | count) > 0 }}"
         sequence:
