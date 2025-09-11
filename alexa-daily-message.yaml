@@ -27,7 +27,7 @@ blueprint:
     manual_trigger:
       name: Manual trigger (helper; optional)
       description: >
-        An input_boolean you can toggle ON to trigger a briefing (for testing or non‑integrated alarms).
+        An **input_boolean** you can toggle ON to trigger a briefing (for testing or non-integrated alarms).
         It will be turned OFF automatically at start.
       default: ""
       selector:
@@ -165,6 +165,8 @@ blueprint:
         Paste YAML/JSON with fields (defaults shown):
 
         speak_delay_seconds: 30
+        ring_window_before_seconds: 5
+        ring_window_after_seconds: 120
         tts_mode: "tts"     # Alexa: "tts" or "announce"
         max_events: 12
         retry_attempts: 3
@@ -172,6 +174,8 @@ blueprint:
 
         Example (YAML):
           speak_delay_seconds: 20
+          ring_window_before_seconds: 5
+          ring_window_after_seconds: 120
           tts_mode: announce
           max_events: 10
       default: {}
@@ -181,18 +185,12 @@ blueprint:
 mode: single
 max_exceeded: silent
 
-trigger_variables:
-  manual_trigger_entity: !input manual_trigger
-
 trigger:
   - platform: state
     entity_id: !input alarm_sensors
-
-  # Optional manual toggle via template trigger. Safe when empty (never true).
-  - platform: template
-    value_template: >-
-      {% set ent = manual_trigger_entity | string %}
-      {{ ent != '' and is_state(ent, 'on') }}
+  - platform: state
+    entity_id: !input manual_trigger
+    to: "on"
 
 variables:
   person_name: !input person_name
@@ -201,6 +199,7 @@ variables:
   snooze_window_minutes: !input snooze_window_minutes
   speak_gap_minutes: !input speak_gap_minutes
   last_spoke_entity: !input last_spoke_helper
+  manual_trigger_entity: !input manual_trigger
   did_speak: false
 
 action:
@@ -210,7 +209,7 @@ action:
         sequence:
           - service: input_boolean.turn_off
             target:
-              entity_id: "{{ manual_trigger_entity }}"
+              entity_id: !input manual_trigger
 
   # --- Post-ring delay first — lets the snooze/next-alarm sensor update; also dedupes overlaps (mode: single) ---
   - variables:
@@ -230,6 +229,17 @@ action:
       retry_attempts: "{{ adv.retry_attempts | default(3) }}"
       retry_base_delay_ms: "{{ adv.retry_base_delay_ms | default(1200) }}"
 
+      # Ring window (alarm fired guard)
+      ring_window_before_seconds: "{{ adv.ring_window_before_seconds | default(5) }}"
+      ring_window_after_seconds:  "{{ adv.ring_window_after_seconds  | default(120) }}"
+
+      # Trigger context
+      is_from_alarm_sensor: "{{ trigger.platform == 'state' and (trigger.entity_id in alarm_entities) }}"
+      alarm_prev_iso: "{{ trigger.from_state.state if trigger.from_state else '' }}"
+      prev_alarm_ts: "{{ as_timestamp(alarm_prev_iso, default=0) }}"
+      now_ts: "{{ now().timestamp() }}"
+      in_ring_window: "{{ is_from_alarm_sensor and (now_ts >= (prev_alarm_ts - (ring_window_before_seconds | int))) and (now_ts <= (prev_alarm_ts + (ring_window_after_seconds | int))) }}"
+
       # Preflight: warn if speak gap set but no helper
       speak_gap_needs_helper: "{{ (speak_gap_minutes | int) > 0 and (last_spoke_entity | string) == '' }}"
 
@@ -244,6 +254,9 @@ action:
                 The automation will proceed without enforcing the gap. To enable it, create an input_datetime
                 (with date and time) and select it in the blueprint's "Last spoken time" field.
               notification_id: daily_briefing_speak_gap_missing_helper
+  # --- Ring window gate: only run if alarm actually fired (ignore when just setting/changing alarms) ---
+  - condition: template
+    value_template: "{{ (not is_from_alarm_sensor) or in_ring_window }}"
 
   - delay:
       seconds: "{{ speak_delay_seconds }}"
@@ -302,7 +315,7 @@ action:
         sequence:
           - service: weather.get_forecasts
             target:
-              entity_id: "{{ weather_key }}"
+              entity_id: !input weather_entity
             data:
               type: daily
             response_variable: forecast
@@ -472,7 +485,6 @@ action:
 
   # --- Split speak_targets into Alexa vs non-Alexa (robust + namespace) ---
   - variables:
-    
       all_targets: !input speak_targets
       alexa_all: "{{ integration_entities('alexa_media') | select('match', '^media_player\\.') | list }}"
       alexa_targets: >-
@@ -612,7 +624,7 @@ action:
         sequence:
           - service: input_datetime.set_datetime
             target:
-              entity_id: "{{ last_spoke_entity }}"
+              entity_id: !input last_spoke_helper
             data:
               date: "{{ now().date().isoformat() }}"
               time: "{{ now().strftime('%H:%M:%S') }}"
