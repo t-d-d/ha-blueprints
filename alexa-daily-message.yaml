@@ -1,14 +1,3 @@
-# v12.6 — Speak-gap fallback hold (no helper required)
-# - If `speak_gap_minutes > 0` **and** no `last_spoke_helper` is set, we now hold the
-#   automation for the duration of the gap **after speaking**. Because `mode: single`
-#   and `max_exceeded: silent`, triggers that occur during this hold are ignored —
-#   effectively enforcing a speak gap without a helper.
-# - If you DO provide `last_spoke_helper` (recommended for long gaps), we enforce
-#   the gap via the timestamp check (more resilient across reboots and avoids holding
-#   the automation task for a long time).
-# - Removed the notification about a missing helper; the blueprint “just works”.
-# - All other fixes from v12.5 retained (ring-window guard, template manual trigger,
-#   dedupe fix, templated optional targets, minimal LLM JSON + **IMPORTANT** tail).
 
 blueprint:
   name: My Daily Briefing — Alarm Calendar & Weather (Echo + Any TTS)
@@ -421,14 +410,17 @@ action:
   # --- LLM prompt (minimal guidance) ---
   - variables:
       llm_prompt: >-
-        Create a concise morning briefing in British date/time. Use the JSON below.
+        Create a concise morning briefing. Use the JSON below.
+        - Include the day of the week in the opening line.
         - Mention weather if provided.
         - List today’s events in a natural order. If a time string is present (HH:MM) for the start or end, include it.
-        Keep it plain and brief (about 3–6 sentences).
+        - For times after 12 midday, use 12-hour time convention. E.g. 'This afternoon you have a meeting at 3 o'clock.'
+        - Keep it plain and brief (about 3–6 sentences).
         Input JSON:
         {
           "date_iso": "{{ now().date().isoformat() }}",
-          "events": {{ events_for_llm | tojson }},
+          "weekday": "{{ now().strftime('%A') }}",
+          "events":  {{ events_for_llm | tojson }},
           "weather_today": {{ today_forecast | tojson }}
         }
         {% if extra_instructions | trim %}
@@ -471,13 +463,15 @@ action:
       final_speech_fallback: >-
         {% set ns = namespace(parts=[]) %}
         {% set greeting = 'Morning' ~ ( ' ' ~ person_name if person_name|trim else '' ) ~ '.' %}
+        {% set dow = now().strftime('%A') %}
+        {% set date_iso = now().date().isoformat() %}
         {% if today_forecast %}
           {% set cond = today_forecast.condition | default('') %}
           {% set hi = today_forecast.temperature | default('?') %}
           {% set lo = today_forecast.templow | default('?') %}
-          {% set ns.parts = ns.parts + [ greeting ~ ' Today: ' ~ cond ~ ', high ' ~ hi ~ '°, low ' ~ lo ~ '°.' ] %}
+          {% set ns.parts = ns.parts + [ greeting ~ ' ' ~ dow ~ ', ' ~ date_iso ~ '. Today: ' ~ cond ~ ', high ' ~ hi ~ '°, low ' ~ lo ~ '°.' ] %}
         {% else %}
-          {% set ns.parts = ns.parts + [ greeting ] %}
+          {% set ns.parts = ns.parts + [ greeting ~ ' ' ~ dow ~ ', ' ~ date_iso ~ '.' ] %}
         {% endif %}
         {% if events_dedup | count == 0 %}
           {% set ns.parts = ns.parts + ['No events in the calendar. Have a great day!'] %}
