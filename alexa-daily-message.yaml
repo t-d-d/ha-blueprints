@@ -1,3 +1,14 @@
+# v12.6 — Speak-gap fallback hold (no helper required)
+# - If `speak_gap_minutes > 0` **and** no `last_spoke_helper` is set, we now hold the
+#   automation for the duration of the gap **after speaking**. Because `mode: single`
+#   and `max_exceeded: silent`, triggers that occur during this hold are ignored —
+#   effectively enforcing a speak gap without a helper.
+# - If you DO provide `last_spoke_helper` (recommended for long gaps), we enforce
+#   the gap via the timestamp check (more resilient across reboots and avoids holding
+#   the automation task for a long time).
+# - Removed the notification about a missing helper; the blueprint “just works”.
+# - All other fixes from v12.5 retained (ring-window guard, template manual trigger,
+#   dedupe fix, templated optional targets, minimal LLM JSON + **IMPORTANT** tail).
 
 blueprint:
   name: My Daily Briefing — Alarm Calendar & Weather (Echo + Any TTS)
@@ -411,10 +422,11 @@ action:
   - variables:
       llm_prompt: >-
         Create a concise morning briefing. Use the JSON below.
-        - Include the day of the week in the opening line.
+        - Include the day of the week and date in the opening line.
         - Mention weather if provided.
         - List today’s events in a natural order. If a time string is present (HH:MM) for the start or end, include it.
         - For times after 12 midday, use 12-hour time convention. E.g. 'This afternoon you have a meeting at 3 o'clock.'
+        - Note that the events are not necessarily for the person(s) being briefed (especially if they are @'ed at other people) so phrase accordingly
         - Keep it plain and brief (about 3–6 sentences).
         Input JSON:
         {
