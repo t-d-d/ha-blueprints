@@ -3,9 +3,11 @@ blueprint:
   name: My Daily Briefing — Alarm Calendar & Weather (Echo + Any TTS)
   description: >
     Speaks today’s calendar (optional weather & LLM) when your phone/Echo alarm fires — or when you flip the
-    optional manual trigger ON. Runs in mode: single with a post-ring delay (lets snooze/next‑alarm update and
-    dedupes overlaps). Snooze-aware via delay-first → next-alarm check; supports @mentions (e.g., @Ana, @all).
-    Optionally spaces announcements via Speak gap using a datetime helper.
+    optional manual trigger ON. The ring-window guard avoids firing when you only set/edit alarms. After a short
+    post-ring delay, it checks for snoozes and announces via Alexa or any TTS. Supports @mentions (e.g., @Ana, @all).
+
+    Speak gap: If you set a gap but don't select the helper, we will hold the automation at the end for that gap
+    (mode: single drops overlapping triggers). For long gaps, using the input_datetime helper is better.
   domain: automation
 
   input:
@@ -27,7 +29,7 @@ blueprint:
     manual_trigger:
       name: Manual trigger (helper; optional)
       description: >
-        An **input_boolean** you can toggle ON to trigger a briefing (for testing or non-integrated alarms).
+        An input_boolean you can toggle ON to trigger a briefing (for testing or non‑integrated alarms).
         It will be turned OFF automatically at start.
       default: ""
       selector:
@@ -54,7 +56,8 @@ blueprint:
       name: Speak gap (minutes)
       description: >
         Minimum gap between briefings. If the last time we actually spoke is within this many minutes,
-        we skip this run. Set to 0 to disable. Requires the helper below to be enforced.
+        we skip this run (when a helper is set). If no helper is set, we'll hold the automation after
+        speaking for this duration so overlap triggers are dropped.
       default: 0
       selector:
         number:
@@ -66,8 +69,8 @@ blueprint:
     last_spoke_helper:
       name: Last spoken time (input_datetime; optional)
       description: >
-        An input_datetime helper (with date and time) that will be updated to now() when a briefing is spoken.
-        If you set a Speak gap but leave this empty, we'll notify you and continue without enforcing the gap.
+        Recommended for long gaps. We update it to now() when a briefing is spoken, and skip new runs until
+        the gap has elapsed. If left empty, we enforce the gap by holding the automation after speaking.
       default: ""
       selector:
         entity:
@@ -185,12 +188,18 @@ blueprint:
 mode: single
 max_exceeded: silent
 
+trigger_variables:
+  manual_trigger_entity: !input manual_trigger
+
 trigger:
   - platform: state
     entity_id: !input alarm_sensors
-  - platform: state
-    entity_id: !input manual_trigger
-    to: "on"
+
+  # Optional manual toggle via template trigger. Safe when empty (never true).
+  - platform: template
+    value_template: >-
+      {% set ent = manual_trigger_entity | string %}
+      {{ ent != '' and is_state(ent, 'on') }}
 
 variables:
   person_name: !input person_name
@@ -209,9 +218,9 @@ action:
         sequence:
           - service: input_boolean.turn_off
             target:
-              entity_id: !input manual_trigger
+              entity_id: "{{ manual_trigger_entity }}"
 
-  # --- Post-ring delay first — lets the snooze/next-alarm sensor update; also dedupes overlaps (mode: single) ---
+  # --- Variables & guards ---
   - variables:
       adv: !input advanced
       alarm_entities: !input alarm_sensors
@@ -224,40 +233,27 @@ action:
       restore_volume: !input restore_volume
 
       speak_delay_seconds: "{{ adv.speak_delay_seconds | default(30) }}"
+      ring_window_before_seconds: "{{ adv.ring_window_before_seconds | default(5) }}"
+      ring_window_after_seconds:  "{{ adv.ring_window_after_seconds  | default(120) }}"
       tts_mode: "{{ adv.tts_mode | default('tts') }}"
       max_events: "{{ adv.max_events | default(12) }}"
       retry_attempts: "{{ adv.retry_attempts | default(3) }}"
       retry_base_delay_ms: "{{ adv.retry_base_delay_ms | default(1200) }}"
-
-      # Ring window (alarm fired guard)
-      ring_window_before_seconds: "{{ adv.ring_window_before_seconds | default(5) }}"
-      ring_window_after_seconds:  "{{ adv.ring_window_after_seconds  | default(120) }}"
 
       # Trigger context
       is_from_alarm_sensor: "{{ trigger.platform == 'state' and (trigger.entity_id in alarm_entities) }}"
       alarm_prev_iso: "{{ trigger.from_state.state if trigger.from_state else '' }}"
       prev_alarm_ts: "{{ as_timestamp(alarm_prev_iso, default=0) }}"
       now_ts: "{{ now().timestamp() }}"
-      in_ring_window: "{{ is_from_alarm_sensor and (now_ts >= (prev_alarm_ts - (ring_window_before_seconds | int))) and (now_ts <= (prev_alarm_ts + (ring_window_after_seconds | int))) }}"
+      in_ring_window: >-
+        {{ is_from_alarm_sensor and (now_ts >= (prev_alarm_ts - (ring_window_before_seconds | int)))
+           and (now_ts <= (prev_alarm_ts + (ring_window_after_seconds | int))) }}
 
-      # Preflight: warn if speak gap set but no helper
-      speak_gap_needs_helper: "{{ (speak_gap_minutes | int) > 0 and (last_spoke_entity | string) == '' }}"
-
-  - choose:
-      - conditions: "{{ speak_gap_needs_helper }}"
-        sequence:
-          - service: persistent_notification.create
-            data:
-              title: "Daily Briefing: Speak gap not enforced (no helper)"
-              message: >-
-                You set a Speak gap of {{ speak_gap_minutes }} minutes but did not select an input_datetime helper.
-                The automation will proceed without enforcing the gap. To enable it, create an input_datetime
-                (with date and time) and select it in the blueprint's "Last spoken time" field.
-              notification_id: daily_briefing_speak_gap_missing_helper
-  # --- Ring window gate: only run if alarm actually fired (ignore when just setting/changing alarms) ---
+  # --- Ring window gate: only run if alarm actually fired (ignore when just scheduling) ---
   - condition: template
     value_template: "{{ (not is_from_alarm_sensor) or in_ring_window }}"
 
+  # --- Post-ring delay (lets snooze/next-alarm update; also dedupes overlaps via mode: single) ---
   - delay:
       seconds: "{{ speak_delay_seconds }}"
 
@@ -278,17 +274,18 @@ action:
     value_template: >-
       {{ not ( (snooze_window_minutes | int) > 0 and (min_next_alarm_delta > 0) and (min_next_alarm_delta <= ((snooze_window_minutes | int) * 60)) ) }}
 
-  # --- Speak gap guard (cooldown between SPOKEN briefings) ---
+  # --- Speak gap guard (cooldown between SPOKEN briefings) — helper path ---
   - variables:
       last_spoke_ts: >-
         {% if (last_spoke_entity | string) != '' %}
           {{ as_timestamp(states(last_spoke_entity), default=0) }}
         {% else %}0{% endif %}
+      helper_present: "{{ (last_spoke_entity | string) != '' }}"
       speak_gap_ok: >-
         {% set gap = (speak_gap_minutes | int) * 60 %}
         {% if gap == 0 %}
           true
-        {% elif (last_spoke_entity | string) == '' %}
+        {% elif not helper_present %}
           true
         {% else %}
           {{ (now().timestamp() - (last_spoke_ts | float(0))) > gap }}
@@ -315,7 +312,7 @@ action:
         sequence:
           - service: weather.get_forecasts
             target:
-              entity_id: !input weather_entity
+              entity_id: "{{ weather_key }}"
             data:
               type: daily
             response_variable: forecast
@@ -381,7 +378,7 @@ action:
       events_dedup: >-
         {% set ns = namespace(items=[], seen=[]) %}
         {% for e in events_flat %}
-          {% set key = (e['summary'] | lower | trim) ~ '|' ~ (e['local_start_time'] | string) ~ '|' ~ (e['local_end_time'] | string) %}
+          {% set key = (e.summary | default('') | lower | trim) ~ '|' ~ (e.local_start_time | default('') | string) ~ '|' ~ (e.local_end_time | default('') | string) %}
           {% if key not in ns.seen %}
             {% set ns.seen = ns.seen + [key] %}
             {% set ns.items = ns.items + [e] %}
@@ -618,13 +615,13 @@ action:
                     message: "{{ speech }}"
     default: []
 
-  # --- Persist last SPOKEN time
+  # --- Persist last SPOKEN time (helper path)
   - choose:
       - conditions: "{{ did_speak and (last_spoke_entity | string) != '' }}"
         sequence:
           - service: input_datetime.set_datetime
             target:
-              entity_id: !input last_spoke_helper
+              entity_id: "{{ last_spoke_entity }}"
             data:
               date: "{{ now().date().isoformat() }}"
               time: "{{ now().strftime('%H:%M:%S') }}"
@@ -643,3 +640,10 @@ action:
                   data:
                     volume_level: "{{ repeat.item.level }}"
     default: []
+
+  # --- Speak-gap fallback hold (no helper) — only when we actually spoke ---
+  - choose:
+      - conditions: "{{ did_speak and (last_spoke_entity | string) == '' and (speak_gap_minutes | int) > 0 }}"
+        sequence:
+          - delay:
+              seconds: "{{ (speak_gap_minutes | int) * 60 }}"
