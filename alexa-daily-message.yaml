@@ -27,7 +27,7 @@ blueprint:
     manual_trigger:
       name: Manual trigger (helper; optional)
       description: >
-        An **input_boolean** you can toggle ON to trigger a briefing (for testing or non-integrated alarms).
+        An input_boolean you can toggle ON to trigger a briefing (for testing or non‑integrated alarms).
         It will be turned OFF automatically at start.
       default: ""
       selector:
@@ -181,12 +181,18 @@ blueprint:
 mode: single
 max_exceeded: silent
 
+trigger_variables:
+  manual_trigger_entity: !input manual_trigger
+
 trigger:
   - platform: state
     entity_id: !input alarm_sensors
-  - platform: state
-    entity_id: !input manual_trigger
-    to: "on"
+
+  # Optional manual toggle via template trigger. Safe when empty (never true).
+  - platform: template
+    value_template: >-
+      {% set ent = manual_trigger_entity | string %}
+      {{ ent != '' and is_state(ent, 'on') }}
 
 variables:
   person_name: !input person_name
@@ -195,7 +201,6 @@ variables:
   snooze_window_minutes: !input snooze_window_minutes
   speak_gap_minutes: !input speak_gap_minutes
   last_spoke_entity: !input last_spoke_helper
-  manual_trigger_entity: !input manual_trigger
   did_speak: false
 
 action:
@@ -205,7 +210,7 @@ action:
         sequence:
           - service: input_boolean.turn_off
             target:
-              entity_id: !input manual_trigger
+              entity_id: "{{ manual_trigger_entity }}"
 
   # --- Post-ring delay first — lets the snooze/next-alarm sensor update; also dedupes overlaps (mode: single) ---
   - variables:
@@ -297,7 +302,7 @@ action:
         sequence:
           - service: weather.get_forecasts
             target:
-              entity_id: !input weather_entity
+              entity_id: "{{ weather_key }}"
             data:
               type: daily
             response_variable: forecast
@@ -606,7 +611,7 @@ action:
         sequence:
           - service: input_datetime.set_datetime
             target:
-              entity_id: !input last_spoke_helper
+              entity_id: "{{ last_spoke_entity }}"
             data:
               date: "{{ now().date().isoformat() }}"
               time: "{{ now().strftime('%H:%M:%S') }}"
