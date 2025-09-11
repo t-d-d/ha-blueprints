@@ -472,6 +472,7 @@ action:
 
   # --- Split speak_targets into Alexa vs non-Alexa (robust + namespace) ---
   - variables:
+    
       all_targets: !input speak_targets
       alexa_all: "{{ integration_entities('alexa_media') | select('match', '^media_player\\.') | list }}"
       alexa_targets: >-
