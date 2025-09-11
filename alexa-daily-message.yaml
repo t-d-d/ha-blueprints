@@ -422,12 +422,13 @@ action:
   - variables:
       llm_prompt: >-
         Create a concise morning briefing. Use the JSON below.
-        - Include the day of the week and date in the opening line.
+        - Include the day of the week and date in a natural style in the opening line.
         - Mention weather if provided.
         - List today’s events in a natural order. If a time string is present (HH:MM) for the start or end, include it.
         - For times after 12 midday, use 12-hour time convention. E.g. 'This afternoon you have a meeting at 3 o'clock.'
         - Note that the events are not necessarily for the person(s) being briefed (especially if they are @'ed at other people) so phrase accordingly
-        - Keep it plain and brief (about 3–6 sentences).
+        - Don't include any @s
+        - Keep it brief (about 3–6 sentences).
         Input JSON:
         {
           "date_iso": "{{ now().date().isoformat() }}",
