@@ -1,3 +1,14 @@
+# v12.6 — Speak-gap fallback hold (no helper required)
+# - If `speak_gap_minutes > 0` **and** no `last_spoke_helper` is set, we now hold the
+#   automation for the duration of the gap **after speaking**. Because `mode: single`
+#   and `max_exceeded: silent`, triggers that occur during this hold are ignored —
+#   effectively enforcing a speak gap without a helper.
+# - If you DO provide `last_spoke_helper` (recommended for long gaps), we enforce
+#   the gap via the timestamp check (more resilient across reboots and avoids holding
+#   the automation task for a long time).
+# - Removed the notification about a missing helper; the blueprint “just works”.
+# - All other fixes from v12.5 retained (ring-window guard, template manual trigger,
+#   dedupe fix, templated optional targets, minimal LLM JSON + **IMPORTANT** tail).
 
 blueprint:
   name: My Daily Briefing — Alarm Calendar & Weather (Echo + Any TTS)
@@ -331,17 +342,17 @@ action:
   - variables:
       person_lc: "{{ (person_name | lower | trim) }}"
       events_flat: >-
-        {% set ns = namespace(items=[]) %}
+        {% set ns = namespace(raw=[], out=[]) %}
         {% for cal in agenda %}
           {% set payload = agenda[cal] %}
           {% if payload is mapping and 'events' in payload %}
             {% for e in payload['events'] %}
               {% set summary = (e['summary'] if 'summary' in e else '') %}
               {% set s = summary | lower %}
-              {% set has_any_tag = (s | regex_search('@[\\w-]+')) if (exclude_other_mentions) else false %}
+              {% set has_any_tag = (s | regex_search('@[\w-]+')) if (exclude_other_mentions) else false %}
               {% set tagged_me = (exclude_other_mentions and (person_lc|length > 0)
-                                   and (s | regex_search('(^|\\W)@' ~ person_lc ~ '(\\W|$)'))) %}
-              {% set tagged_all = (exclude_other_mentions and (s | regex_search('(^|\\W)@all(\\W|$)'))) %}
+                                   and (s | regex_search('(^|\W)@' ~ person_lc ~ '(\W|$)'))) %}
+              {% set tagged_all = (exclude_other_mentions and (s | regex_search('(^|\W)@all(\W|$)'))) %}
               {% set include = (not exclude_other_mentions) or tagged_me or tagged_all or (not has_any_tag) %}
               {% if include %}
                 {% set start_s = (e['start'] | string) %}
@@ -362,7 +373,7 @@ action:
                     start_loc if (start_is_today and not date_only) else
                     end_loc   if (end_is_today   and not date_only) else
                     as_local(as_datetime(today_at('00:00:00'))) ) %}
-                {% set ns.items = ns.items + [ {
+                {% set ns.raw = ns.raw + [ {
                   'summary': summary,
                   'local_start_time': local_start_time,
                   'local_end_time': local_end_time,
@@ -372,13 +383,21 @@ action:
             {% endfor %}
           {% endif %}
         {% endfor %}
-        {{ (ns.items | sort(attribute='sort_key'))[: (max_events | int) ] }}
+        {# Now sort by the datetime-only sort_key, but OUTPUT items **without** sort_key (strings only) #}
+        {% for e in (ns.raw | sort(attribute='sort_key'))[: (max_events | int) ] %}
+          {% set ns.out = ns.out + [ {
+            'summary': e['summary'],
+            'local_start_time': e['local_start_time'],
+            'local_end_time': e['local_end_time']
+          } ] %}
+        {% endfor %}
+        {{ ns.out }}
 
   - variables:
       events_dedup: >-
         {% set ns = namespace(items=[], seen=[]) %}
         {% for e in events_flat %}
-          {% set key = (e.summary | default('') | lower | trim) ~ '|' ~ (e.local_start_time | default('') | string) ~ '|' ~ (e.local_end_time | default('') | string) %}
+          {% set key = (e['summary'] | default('') | lower | trim) ~ '|' ~ (e['local_start_time'] | default('') | string) ~ '|' ~ (e['local_end_time'] | default('') | string) %}
           {% if key not in ns.seen %}
             {% set ns.seen = ns.seen + [key] %}
             {% set ns.items = ns.items + [e] %}
@@ -392,9 +411,9 @@ action:
         {% set ns = namespace(list=[]) %}
         {% for e in events_dedup %}
           {% set ns.list = ns.list + [ {
-            'summary': e.summary,
-            'local_start_time': e.local_start_time,
-            'local_end_time': e.local_end_time
+            'summary': e['summary'],
+            'local_start_time': e['local_start_time'],
+            'local_end_time': e['local_end_time']
           } ] %}
         {% endfor %}
         {{ ns.list }}
