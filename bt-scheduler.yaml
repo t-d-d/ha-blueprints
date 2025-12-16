@@ -1,21 +1,27 @@
 blueprint:
-  name: Better Thermostat Scheduler (Smart Guard)
+  name: Better Thermostat Scheduler (with Override)
   domain: automation
   description: |-
-    Switches Better Thermostat between comfort and eco temperatures.
+    Controls Better Thermostat (v1.8.0+) using Dynamic Presets.
     
-    GUARD LOGIC:
-    This allows you to block heating (force Eco) based on any condition.
-    Enter the logic as a Jinja2 Expression WITHOUT curly braces.
-    
-    Correct:  is_state('binary_sensor.door', 'off')
-    Wrong:   {{ is_state('binary_sensor.door', 'off') }}
+    PRIORITY LOGIC:
+    1. Override Condition (If TRUE -> Sets 'Override Preset')
+    2. Everyone Away (If TRUE -> Sets 'Away Preset')
+    3. Schedule Active (If TRUE -> Sets 'Active Preset')
+    4. Schedule Inactive (Default -> Sets 'Sleep Preset')
 
+    TIPS:
+    * Use the 'Override' for custom logic.
+    * Example: Force 'Eco' mode if a room presence sensor shows 'Clear'.
+    * Set your desired temperatures for each Preset directly on your Dashboard thermostat card.
+
+    Version 5.1 - Final "Override" Edition
   source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-scheduler.yaml
 
   input:
     target_bt:
       name: Better Thermostats
+      description: The climate entity to control.
       selector:
         target:
           device:
@@ -24,23 +30,75 @@ blueprint:
             integration: better_thermostat
             domain: climate
 
-    target_temperature:
-      name: Eco Temperature
-      default: 17
-      selector:
-        number:
-          min: 5
-          max: 35
-          unit_of_measurement: °C
+    # --- PRESET CONFIGURATION ---
+    preset_active:
+      name: Active (Comfort) Preset
+      description: Used when Schedule is ON and people are Home.
+      default: 'home'
+      selector: &preset_selector
+        select:
+          options:
+            - home
+            - comfort
+            - active
+            - boost
+            - none
+          custom_value: true
+
+    preset_sleep:
+      name: Sleep (Off/Night) Preset
+      description: Used when Schedule is OFF (and no other overrides apply).
+      default: 'sleep'
+      selector: &preset_selector_sleep
+        select:
+          options:
+            - sleep
+            - eco
+            - away
+            - 'off'
+            - none
+          custom_value: true
+
+    preset_away:
+      name: Away Preset
+      description: Used when Everyone is Away (overrides the schedule).
+      default: 'away'
+      selector: &preset_selector_away
+        select:
+          options:
+            - away
+            - eco
+            - sleep
+            - 'off'
+          custom_value: true
+
+    preset_override:
+      name: Override Preset
+      description: >
+        The preset to force when your custom Override Logic is TRUE.
+        (e.g., set to 'Eco' if the room is empty).
+      default: 'eco'
+      selector: &preset_selector_override
+        select:
+          options:
+            - eco
+            - away
+            - 'off'
+            - home
+            - comfort
+          custom_value: true
+    # ----------------------------
 
     schedule_for_bt_on:
       name: Schedule
+      description: The schedule that determines when the 'Active' preset is used.
       selector:
         entity:
           domain: schedule
 
     monitor_person:
       name: Persons
+      description: If everyone listed here is away, the 'Away' preset is used.
       default: []
       selector:
         entity:
@@ -49,22 +107,25 @@ blueprint:
 
     monitor_zones:
       name: Zones
+      description: Additional zones considered "Home".
       default: []
       selector:
         entity:
           domain: zone
           multiple: true
 
-    blocking_expression:
-      name: Guard Expression
+    # --- OVERRIDE LOGIC ---
+    override_template:
+      name: Override Logic (Template)
       description: >
-        Return TRUE to block heating. 
-        IMPORTANT: Do NOT use {{ }} curly braces.
-        Example: is_state('binary_sensor.lounge_door', 'off')
-      default: "false"
+        Jinja2 template. When TRUE, the 'Override Preset' is forced.
+        
+        Examples: 
+        * Room Unoccupied: {{ is_state('binary_sensor.lounge_occupancy', 'off') }}
+        * Guest Mode: {{ is_state('input_boolean.guest_mode', 'on') }}
+      default: "{{ false }}"
       selector:
-        text:
-          multiline: true
+        template: {} 
 
 trigger:
   - platform: state
@@ -72,29 +133,32 @@ trigger:
   - platform: state
     entity_id: !input monitor_person
   
-  # Trigger 1: Guard turns ON (e.g. Door closes)
-  - platform: template
-    value_template: "{{ !input blocking_expression }}"
-    
-  # Trigger 2: Guard turns OFF (e.g. Door opens)
-  # Because the input has no braces, we can safely wrap it in 'not()'
-  - platform: template
-    value_template: "{{ not ( !input blocking_expression ) }}"
+  # Poll every minute (at 30s offset) to check the Override Template
+  - platform: time_pattern
+    minutes: "/1"
+    seconds: 30
 
 variables:
+  # Load Inputs
   target_bt: !input target_bt
-  target_temperature: !input target_temperature
   schedule_for_bt_on: !input schedule_for_bt_on
   monitor_person: !input monitor_person
   monitor_zones: !input monitor_zones
+  override_template: !input override_template
   
-  # We wrap the input in braces here so we can use the result in logic
-  isBlocked: "{{ !input blocking_expression }}"
-  isScheduled: "{{ is_state(schedule_for_bt_on, 'on') }}"
+  # Load Presets
+  preset_active: !input preset_active
+  preset_sleep: !input preset_sleep
+  preset_away: !input preset_away
+  preset_override: !input preset_override
+
+  # State Calculations
+  is_schedule_on: "{{ is_state(schedule_for_bt_on, 'on') }}"
+  is_override_active: "{{ override_template }}"
   
   zones: "{{ monitor_zones | map('state_attr', 'friendly_name') | list }}"
-  numPeople: "{{ monitor_person | list | length }}"
-  numPeopleAtHome: >-
+  num_people_tracked: "{{ monitor_person | list | length }}"
+  num_people_home: >-
     {% set data = namespace(count=0) %}
     {% for person in monitor_person %}
       {% if states(person) in (zones + ['home']) %}
@@ -102,24 +166,46 @@ variables:
       {% endif %}
     {% endfor %}
     {{ data.count }}
+    
+  is_everyone_away: "{{ num_people_tracked > 0 and num_people_home == 0 }}"
 
 actions:
   - choose:
-      # PRIORITY 1: Force Eco 
-      # (Guard is True OR Schedule Off OR Away)
-      - conditions: >-
-          {{ isBlocked or not isScheduled or (numPeople > 0 and numPeopleAtHome == 0) }}
+      # PRIORITY 1: Manual/Logic Override
+      - conditions:
+          - condition: template
+            value_template: "{{ is_override_active }}"
         sequence:
-          - service: better_thermostat.set_temp_target_temperature
+          - service: climate.set_preset_mode
             data:
-              temperature: !input target_temperature
+              preset_mode: !input preset_override
             target: !input target_bt
 
-      # PRIORITY 2: Restore Comfort 
-      # (Guard is False AND Schedule On AND Home)
-      - conditions: >-
-          {{ not isBlocked and isScheduled and (numPeople == 0 or numPeopleAtHome > 0) }}
+      # PRIORITY 2: Everyone Away
+      - conditions:
+          - condition: template
+            value_template: "{{ is_everyone_away }}"
         sequence:
-          - service: better_thermostat.restore_saved_target_temperature
-            data: {}
+          - service: climate.set_preset_mode
+            data:
+              preset_mode: !input preset_away
+            target: !input target_bt
+
+      # PRIORITY 3: Schedule ON (Active)
+      - conditions:
+          - condition: template
+            value_template: "{{ is_schedule_on }}"
+        sequence:
+          - service: climate.set_preset_mode
+            data:
+              preset_mode: !input preset_active
+            target: !input target_bt
+
+      # PRIORITY 4: Schedule OFF (Sleep/Default)
+      # Fall-through if no other conditions match
+      - conditions: []
+        sequence:
+          - service: climate.set_preset_mode
+            data:
+              preset_mode: !input preset_sleep
             target: !input target_bt
