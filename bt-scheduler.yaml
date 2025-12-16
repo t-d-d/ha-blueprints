@@ -1,25 +1,21 @@
 blueprint:
-  name: Better Thermostat Scheduler
+  name: Better Thermostat Scheduler (Smart Guard)
   domain: automation
-  author: Thomas Dickinson
   description: |-
-    Switches Better Thermostat between its comfort temperature and a set-back eco temperature, based on persons' presence and a schedule. 
+    Switches Better Thermostat between comfort and eco temperatures.
+    
+    GUARD LOGIC:
+    This allows you to block heating (force Eco) based on any condition.
+    Enter the logic as a Jinja2 Expression WITHOUT curly braces.
+    
+    Correct:  is_state('binary_sensor.door', 'off')
+    Wrong:   {{ is_state('binary_sensor.door', 'off') }}
 
-    Restores the Better Thermostat's comfort temperature when:
-    * the schedule is on, and
-    * at least one person is at home.
-
-    Sets a configured set-back eco temperature when:
-    * the schedule is off, or
-    * all the persons are not at home.
-
-    Version 1.0, 24/10/2024
   source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-scheduler.yaml
 
   input:
     target_bt:
       name: Better Thermostats
-      description: Which Better Thermostat is to be controlled (climate, only Better Thermostat devices can be selected here)
       selector:
         target:
           device:
@@ -29,8 +25,7 @@ blueprint:
             domain: climate
 
     target_temperature:
-      name: Set-back eco temperature
-      description: The eco temperature to set when the person is absent or the schedule is off.
+      name: Eco Temperature
       default: 17
       selector:
         number:
@@ -40,14 +35,12 @@ blueprint:
 
     schedule_for_bt_on:
       name: Schedule
-      description: Schedule for when the Better Thermostat should use its set comfort temperature.
       selector:
         entity:
           domain: schedule
 
     monitor_person:
       name: Persons
-      description: The person(s) to monitor for presence at home. When all are not home, the set-back temperature will be set.
       default: []
       selector:
         entity:
@@ -56,21 +49,37 @@ blueprint:
 
     monitor_zones:
       name: Zones
-      description: Additional zones considered home.
       default: []
       selector:
         entity:
           domain: zone
           multiple: true
 
+    blocking_expression:
+      name: Guard Expression
+      description: >
+        Return TRUE to block heating. 
+        IMPORTANT: Do NOT use {{ }} curly braces.
+        Example: is_state('binary_sensor.lounge_door', 'off')
+      default: "false"
+      selector:
+        text:
+          multiline: true
+
 trigger:
   - platform: state
     entity_id: !input schedule_for_bt_on
   - platform: state
     entity_id: !input monitor_person
-#conditions:
-#  - condition: template
-#    value_template: "{{ trigger.to_state.state not in ['unknown', 'unavailable'] }}"
+  
+  # Trigger 1: Guard turns ON (e.g. Door closes)
+  - platform: template
+    value_template: "{{ !input blocking_expression }}"
+    
+  # Trigger 2: Guard turns OFF (e.g. Door opens)
+  # Because the input has no braces, we can safely wrap it in 'not()'
+  - platform: template
+    value_template: "{{ not ( !input blocking_expression ) }}"
 
 variables:
   target_bt: !input target_bt
@@ -78,7 +87,11 @@ variables:
   schedule_for_bt_on: !input schedule_for_bt_on
   monitor_person: !input monitor_person
   monitor_zones: !input monitor_zones
+  
+  # We wrap the input in braces here so we can use the result in logic
+  isBlocked: "{{ !input blocking_expression }}"
   isScheduled: "{{ is_state(schedule_for_bt_on, 'on') }}"
+  
   zones: "{{ monitor_zones | map('state_attr', 'friendly_name') | list }}"
   numPeople: "{{ monitor_person | list | length }}"
   numPeopleAtHome: >-
@@ -92,17 +105,21 @@ variables:
 
 actions:
   - choose:
-    - conditions: >-
-        {{ isScheduled and (numPeople == 0 or numPeopleAtHome > 0) }}
-      sequence:
-        - service: better_thermostat.restore_saved_target_temperature
-          data: {}
-          target: !input target_bt
+      # PRIORITY 1: Force Eco 
+      # (Guard is True OR Schedule Off OR Away)
+      - conditions: >-
+          {{ isBlocked or not isScheduled or (numPeople > 0 and numPeopleAtHome == 0) }}
+        sequence:
+          - service: better_thermostat.set_temp_target_temperature
+            data:
+              temperature: !input target_temperature
+            target: !input target_bt
 
-    - conditions: >-
-        {{ not isScheduled or numPeople > 0 and numPeopleAtHome == 0 }}
-      sequence:
-        - service: better_thermostat.set_temp_target_temperature
-          data:
-            temperature: !input target_temperature
-          target: !input target_bt
+      # PRIORITY 2: Restore Comfort 
+      # (Guard is False AND Schedule On AND Home)
+      - conditions: >-
+          {{ not isBlocked and isScheduled and (numPeople == 0 or numPeopleAtHome > 0) }}
+        sequence:
+          - service: better_thermostat.restore_saved_target_temperature
+            data: {}
+            target: !input target_bt
