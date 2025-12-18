@@ -1,211 +1,117 @@
 blueprint:
-  name: Better Thermostat Scheduler (with Override)
+  name: Better Thermostat - Single Shot Edition
   domain: automation
   description: |-
-    Controls Better Thermostat (v1.8.0+) using Dynamic Presets.
-    
-    PRIORITY LOGIC:
-    1. Override Condition (If TRUE -> Sets 'Override Preset')
-    2. Everyone Away (If TRUE -> Sets 'Away Preset')
-    3. Schedule Active (If TRUE -> Sets 'Active Preset')
-    4. Schedule Inactive (Default -> Sets 'Sleep Preset')
+    Advanced control for Better Thermostat (v1.8+).
+    Calculates the target preset in variables and sends a single command.
 
-    TIPS:
-    * Use the 'Override' for custom logic.
-    * Example: Force 'Eco' mode if a room presence sensor shows 'Clear'.
-    * Set your desired temperatures for each Preset directly on your Dashboard thermostat card.
+    LOGIC PRIORITY:
+    1. Smart Override (User Template)
+    2. Away Matrix (Schedule On/Off)
+    3. Home Matrix (Schedule On/Off)
 
-    Version 5.1 - Final "Override" Edition
-  source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-scheduler.yaml
+  source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-scheduler-single.yaml
 
   input:
     target_bt:
-      name: Better Thermostats
-      description: The climate entity to control.
-      selector:
-        target:
-          device:
-            integration: better_thermostat
-          entity:
-            integration: better_thermostat
-            domain: climate
+      name: Better Thermostat Entity
+      selector: { entity: { domain: climate, integration: better_thermostat } }
 
-    # --- PRESET CONFIGURATION ---
-    preset_active:
-      name: Active (Comfort) Preset
-      description: Used when Schedule is ON and people are Home.
-      default: 'home'
-      selector: &preset_selector
-        select:
-          options:
-            - home
-            - comfort
-            - active
-            - boost
-            - none
-          custom_value: true
-
-    preset_sleep:
-      name: Sleep (Off/Night) Preset
-      description: Used when Schedule is OFF (and no other overrides apply).
-      default: 'sleep'
-      selector: &preset_selector_sleep
-        select:
-          options:
-            - sleep
-            - eco
-            - away
-            - 'off'
-            - none
-          custom_value: true
-
-    preset_away:
-      name: Away Preset
-      description: Used when Everyone is Away (overrides the schedule).
-      default: 'away'
-      selector: &preset_selector_away
-        select:
-          options:
-            - away
-            - eco
-            - sleep
-            - 'off'
-          custom_value: true
-
-    preset_override:
-      name: Override Preset
-      description: >
-        The preset to force when your custom Override Logic is TRUE.
-        (e.g., set to 'Eco' if the room is empty).
-      default: 'eco'
-      selector: &preset_selector_override
-        select:
-          options:
-            - eco
-            - away
-            - 'off'
-            - home
-            - comfort
-          custom_value: true
-    # ----------------------------
-
-    schedule_for_bt_on:
-      name: Schedule
-      description: The schedule that determines when the 'Active' preset is used.
-      selector:
-        entity:
-          domain: schedule
+    schedule_entity:
+      name: Schedule (Awake Hours)
+      selector: { entity: { domain: schedule } }
 
     monitor_person:
-      name: Persons
-      description: If everyone listed here is away, the 'Away' preset is used.
-      default: []
-      selector:
-        entity:
-          domain: person
-          multiple: true
+      name: Occupancy
+      selector: { entity: { domain: person, multiple: true } }
 
-    monitor_zones:
-      name: Zones
-      description: Additional zones considered "Home".
-      default: []
-      selector:
-        entity:
-          domain: zone
-          multiple: true
+    # --- MATRIX INPUTS ---
+    preset_home_sched:
+      name: 🏠 Home + Active
+      default: 'home'
+      selector: &p_select { select: { options: [home, comfort, active, boost, sleep, eco, away, 'off'], custom_value: true } }
 
-    # --- OVERRIDE LOGIC ---
+    preset_home_sleep:
+      name: 🏠 Home + Sleep
+      default: 'sleep'
+      selector: *p_select
+
+    preset_away_sched:
+      name: 🚲 Away + Active (Pre-heat)
+      default: 'eco'
+      selector: *p_select
+
+    preset_away_sleep:
+      name: 🚲 Away + Sleep
+      default: 'away'
+      selector: *p_select
+
+    # --- OVERRIDE ---
     override_template:
-      name: Override Logic (Template)
+      name: Smart Override Logic
       description: >
-        Jinja2 template. When TRUE, the 'Override Preset' is forced.
-        
-        Examples: 
-        * Room Unoccupied: {{ is_state('binary_sensor.lounge_occupancy', 'off') }}
-        * Guest Mode: {{ is_state('input_boolean.guest_mode', 'on') }}
+        Return a preset name to force it. Return False/None to skip.
+        Context: is_scheduled, is_someone_home
       default: "{{ false }}"
-      selector:
-        template: {} 
+      selector: { template: {} }
+
+    preset_override_default:
+      name: Default Override Preset
+      description: Used if logic returns simple 'True'.
+      default: 'boost'
+      selector: *p_select
 
 trigger:
   - platform: state
-    entity_id: !input schedule_for_bt_on
+    entity_id: !input schedule_entity
   - platform: state
     entity_id: !input monitor_person
-  
-  # Poll every minute (at 30s offset) to check the Override Template
   - platform: time_pattern
-    minutes: "/1"
-    seconds: 30
+    minutes: "/5"
 
 variables:
-  # Load Inputs
-  target_bt: !input target_bt
-  schedule_for_bt_on: !input schedule_for_bt_on
+  # 1. Inputs
+  schedule_entity: !input schedule_entity
   monitor_person: !input monitor_person
-  monitor_zones: !input monitor_zones
-  override_template: !input override_template
+  p_home_sched: !input preset_home_sched
+  p_home_sleep: !input preset_home_sleep
+  p_away_sched: !input preset_away_sched
+  p_away_sleep: !input preset_away_sleep
+  p_over_def: !input preset_override_default
   
-  # Load Presets
-  preset_active: !input preset_active
-  preset_sleep: !input preset_sleep
-  preset_away: !input preset_away
-  preset_override: !input preset_override
+  # 2. Context Helpers (Available to user template)
+  is_scheduled: "{{ is_state(schedule_entity, 'on') }}"
+  is_someone_home: >-
+    {{ expand(monitor_person) | selectattr('state','in',['home','on']) | list | count > 0 }}
 
-  # State Calculations
-  is_schedule_on: "{{ is_state(schedule_for_bt_on, 'on') }}"
-  is_override_active: "{{ override_template }}"
+  # 3. Evaluate Override
+  raw_override: !input override_template
   
-  zones: "{{ monitor_zones | map('state_attr', 'friendly_name') | list }}"
-  num_people_tracked: "{{ monitor_person | list | length }}"
-  num_people_home: >-
-    {% set data = namespace(count=0) %}
-    {% for person in monitor_person %}
-      {% if states(person) in (zones + ['home']) %}
-        {% set data.count = data.count + 1 %}
-      {% endif %}
-    {% endfor %}
-    {{ data.count }}
+  # 4. THE DECISION ENGINE
+  # This single variable determines the outcome.
+  final_preset: >-
+    {# --- CHECK OVERRIDE FIRST --- #}
+    {% if raw_override in [true, 'True', 'on'] %}
+      {{ p_over_def }}
+    {% elif raw_override not in [false, 'False', 'off', '', none] %}
+      {{ raw_override }}
     
-  is_everyone_away: "{{ num_people_tracked > 0 and num_people_home == 0 }}"
+    {# --- CHECK AWAY MATRIX --- #}
+    {% elif not is_someone_home %}
+      {{ p_away_sched if is_scheduled else p_away_sleep }}
+      
+    {# --- DEFAULT TO HOME MATRIX --- #}
+    {% else %}
+      {{ p_home_sched if is_scheduled else p_home_sleep }}
+    {% endif %}
 
-actions:
-  - choose:
-      # PRIORITY 1: Manual/Logic Override
-      - conditions:
-          - condition: template
-            value_template: "{{ is_override_active }}"
-        sequence:
-          - service: climate.set_preset_mode
-            data:
-              preset_mode: !input preset_override
-            target: !input target_bt
-
-      # PRIORITY 2: Everyone Away
-      - conditions:
-          - condition: template
-            value_template: "{{ is_everyone_away }}"
-        sequence:
-          - service: climate.set_preset_mode
-            data:
-              preset_mode: !input preset_away
-            target: !input target_bt
-
-      # PRIORITY 3: Schedule ON (Active)
-      - conditions:
-          - condition: template
-            value_template: "{{ is_schedule_on }}"
-        sequence:
-          - service: climate.set_preset_mode
-            data:
-              preset_mode: !input preset_active
-            target: !input target_bt
-
-      # PRIORITY 4: Schedule OFF (Sleep/Default)
-      # Fall-through if no other conditions match
-      - conditions: []
-        sequence:
-          - service: climate.set_preset_mode
-            data:
-              preset_mode: !input preset_sleep
-            target: !input target_bt
+action:
+  # Check if we actually have a valid preset string to send
+  - condition: template
+    value_template: "{{ final_preset not in [none, '', 'None'] }}"
+    
+  - service: climate.set_preset_mode
+    target:
+      entity_id: !input target_bt
+    data:
+      preset_mode: "{{ final_preset }}"
