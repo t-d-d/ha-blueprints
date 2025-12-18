@@ -1,65 +1,108 @@
 blueprint:
-  name: Better Thermostat - Single Shot Edition
+  name: Better Thermostat - Matrix Edition (with Zones)
   domain: automation
   description: |-
     Advanced control for Better Thermostat (v1.8+).
-    Calculates the target preset in variables and sends a single command.
-
+    
     LOGIC PRIORITY:
     1. Smart Override (User Template)
+       - Can force a specific preset or fall back to a default.
     2. Away Matrix (Schedule On/Off)
+       - Active only if everyone is Away AND not in any monitored Zone.
     3. Home Matrix (Schedule On/Off)
+       - Default state.
 
-  source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-scheduler-single.yaml
+  source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-matrix-zones.yaml
 
   input:
     target_bt:
-      name: Better Thermostat Entity
-      selector: { entity: { domain: climate, integration: better_thermostat } }
+      name: Better Thermostats
+      description: The climate entity to control.
+      selector:
+        target:
+          device:
+            integration: better_thermostat
+          entity:
+            integration: better_thermostat
+            domain: climate
 
     schedule_entity:
-      name: Schedule (Awake Hours)
-      selector: { entity: { domain: schedule } }
+      name: Schedule
+      description: Defines your "Awake/Active" hours (On) vs "Sleep" hours (Off).
+      selector:
+        entity:
+          domain: schedule
 
     monitor_person:
-      name: Occupancy
-      selector: { entity: { domain: person, multiple: true } }
+      name: Persons
+      description: Automation enters "Away" mode only if ALL these people are absent.
+      default: []
+      selector:
+        entity:
+          domain: person
+          multiple: true
 
-    # --- MATRIX INPUTS ---
+    monitor_zones:
+      name: Zones
+      description: >
+        Additional zones where you are considered "Home". 
+        (e.g., 'Garden', 'Neighbors').
+      default: []
+      selector:
+        entity:
+          domain: zone
+          multiple: true
+
+    # --- MATRIX PRESETS ---
     preset_home_sched:
-      name: 🏠 Home + Active
+      name: 🏠 Home + Active (Schedule On)
+      description: Standard comfort mode.
       default: 'home'
-      selector: &p_select { select: { options: [home, comfort, active, boost, sleep, eco, away, 'off'], custom_value: true } }
+      selector: &preset_selector
+        select:
+          options: [home, comfort, active, boost, none]
+          custom_value: true
 
     preset_home_sleep:
-      name: 🏠 Home + Sleep
+      name: 🏠 Home + Sleep (Schedule Off)
+      description: Night setback / Sleep mode.
       default: 'sleep'
-      selector: *p_select
+      selector: &preset_selector_eco
+        select:
+          options: [sleep, eco, night, 'off', none, away]
+          custom_value: true
 
     preset_away_sched:
-      name: 🚲 Away + Active (Pre-heat)
+      name: 🚲 Away + Active (Schedule On)
+      description: Daytime Away. Use 'Eco' for efficient pre-heating.
       default: 'eco'
-      selector: *p_select
+      selector: *preset_selector_eco
 
     preset_away_sleep:
-      name: 🚲 Away + Sleep
+      name: 🚲 Away + Sleep (Schedule Off)
+      description: Night Away. Use 'Away' or 'Off'.
       default: 'away'
-      selector: *p_select
+      selector: *preset_selector_eco
 
     # --- OVERRIDE ---
     override_template:
       name: Smart Override Logic
       description: >
-        Return a preset name to force it. Return False/None to skip.
-        Context: is_scheduled, is_someone_home
+        Return a preset name (e.g., 'boost') to force that state.
+        Return 'True' to use the Default Override Preset below.
+        
+        VARIABLES AVAILABLE:
+        - is_scheduled (bool)
+        - is_someone_home (bool)
       default: "{{ false }}"
-      selector: { template: {} }
+      selector:
+        template: {}
 
     preset_override_default:
       name: Default Override Preset
-      description: Used if logic returns simple 'True'.
+      description: Used if your Template Logic returns simple 'True'.
       default: 'boost'
-      selector: *p_select
+      selector: *preset_selector
 
 trigger:
   - platform: state
@@ -70,30 +113,39 @@ trigger:
     minutes: "/5"
 
 variables:
-  # 1. Inputs
+  # 1. Load Inputs
   schedule_entity: !input schedule_entity
   monitor_person: !input monitor_person
+  monitor_zones: !input monitor_zones
+  
+  # Presets
   p_home_sched: !input preset_home_sched
   p_home_sleep: !input preset_home_sleep
   p_away_sched: !input preset_away_sched
   p_away_sleep: !input preset_away_sleep
   p_over_def: !input preset_override_default
-  
-  # 2. Context Helpers (Available to user template)
+
+  # 2. Context Helpers
   is_scheduled: "{{ is_state(schedule_entity, 'on') }}"
+  
+  # Calculate Presence (Home + Zones)
+  # People states return the 'Friendly Name' of the zone they are in.
+  zone_names: "{{ expand(monitor_zones) | map(attribute='attributes.friendly_name') | list }}"
   is_someone_home: >-
-    {{ expand(monitor_person) | selectattr('state','in',['home','on']) | list | count > 0 }}
+    {% set people_states = expand(monitor_person) | map(attribute='state') | list %}
+    {% set valid_locations = ['home', 'on'] + zone_names %}
+    {# Check if any person is in a valid location #}
+    {{ people_states | select('in', valid_locations) | list | count > 0 }}
 
   # 3. Evaluate Override
   raw_override: !input override_template
   
   # 4. THE DECISION ENGINE
-  # This single variable determines the outcome.
   final_preset: >-
     {# --- CHECK OVERRIDE FIRST --- #}
-    {% if raw_override in [true, 'True', 'on'] %}
+    {% if raw_override in [true, 'True', 'true', 'on'] %}
       {{ p_over_def }}
-    {% elif raw_override not in [false, 'False', 'off', '', none] %}
+    {% elif raw_override not in [false, 'False', 'false', 'off', '', none] %}
       {{ raw_override }}
     
     {# --- CHECK AWAY MATRIX --- #}
@@ -106,12 +158,11 @@ variables:
     {% endif %}
 
 action:
-  # Check if we actually have a valid preset string to send
+  # Safety Check: Do nothing if the logic somehow returns None/Empty
   - condition: template
     value_template: "{{ final_preset not in [none, '', 'None'] }}"
     
   - service: climate.set_preset_mode
-    target:
-      entity_id: !input target_bt
+    target: !input target_bt
     data:
       preset_mode: "{{ final_preset }}"
