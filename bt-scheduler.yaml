@@ -105,10 +105,10 @@ blueprint:
       selector: *preset_selector
 
 trigger:
-  - platform: state
-    entity_id: !input schedule_entity
-  - platform: state
-    entity_id: !input monitor_person
+#  - platform: state
+#    entity_id: !input schedule_entity
+#  - platform: state
+#    entity_id: !input monitor_person
   - platform: time_pattern
     minutes: "/5"
 
