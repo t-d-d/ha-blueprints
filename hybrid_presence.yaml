@@ -44,7 +44,7 @@ blueprint:
           unit_of_measurement: seconds
 
 # ----------------------------------------------------------------
-# AUTOMATION CONFIGURATION (Root Level)
+# AUTOMATION CONFIGURATION
 # ----------------------------------------------------------------
 mode: restart
 max_exceeded: silent
@@ -60,8 +60,8 @@ trigger:
 variables:
   gps_entity: !input gps_tracker
   wifi_entity: !input wifi_sensor
-  # Convert input string "A, B" into list ['A', 'B'] for matching
   ssid_input: !input home_ssids
+  # Convert input string "A, B" into list ['A', 'B'] for matching
   home_ssid_list: >
     {{ ssid_input.split(',') | map('trim') | list }}
   
@@ -70,7 +70,6 @@ variables:
   grace_sec: !input grace_period
   
   # LIVE STATES
-  # Handle case where wifi sensor might be unavailable/unknown
   current_ssid: "{{ states(wifi_entity) | default('unknown') }}"
   wifi_connected_state: "<not connected>" 
   
@@ -81,8 +80,11 @@ variables:
   # DATA SNAPSHOT
   gps_lat: "{{ state_attr(gps_entity, 'latitude') | default(0) }}"
   gps_long: "{{ state_attr(gps_entity, 'longitude') | default(0) }}"
-  gps_acc: "{{ state_attr(gps_entity, 'gps_accuracy') | default(0) }}"
-  batt: "{{ state_attr(gps_entity, 'battery_level') | default(0) }}"
+  # We still check battery for the "Dead Phone" guard, but we don't sync it to the tracker.
+  batt: "{{ state_attr(gps_entity, 'battery_level') | int(default=0) }}"
+  
+  # Force integer to prevent null errors on accuracy
+  gps_acc: "{{ state_attr(gps_entity, 'gps_accuracy') | int(default=0) }}"
   
   home_lat: "{{ state_attr('zone.home', 'latitude') }}"
   home_long: "{{ state_attr('zone.home', 'longitude') }}"
@@ -104,11 +106,11 @@ action:
               source_type: router
               gps: ["{{ home_lat }}", "{{ home_long }}"]
               gps_accuracy: 10
-              battery: "{{ batt }}"
+              # Battery sync removed
 
       # ----------------------------------------------------------------
       # SCENARIO 2: CONNECTED TO ALIEN WIFI (Office, Starbucks)
-      # Action: Force Away INSTANTLY (No Grace Period needed)
+      # Action: Force Away INSTANTLY
       # ----------------------------------------------------------------
       - conditions:
           - condition: template
@@ -125,7 +127,6 @@ action:
               source_type: router
               gps: ["{{ gps_lat }}", "{{ gps_long }}"]
               gps_accuracy: "{{ gps_acc }}"
-              battery: "{{ batt }}"
 
       # ----------------------------------------------------------------
       # SCENARIO 3: DISCONNECTED (Potential Leaving / Reboot / Sleep)
@@ -143,7 +144,7 @@ action:
                   # Battery Guard: If < 5%, assume dead phone, stay Home.
                   - if:
                       - condition: template
-                        value_template: "{{ batt | int(0) < 5 }}"
+                        value_template: "{{ batt < 5 }}"
                     then:
                       - stop: "Phone battery critical. Assuming dead phone."
                   
@@ -162,7 +163,6 @@ action:
                           source_type: router
                           gps: ["{{ gps_lat }}", "{{ gps_long }}"]
                           gps_accuracy: "{{ gps_acc }}"
-                          battery: "{{ batt }}"
 
               # B. GPS updated RECENTLY (Sleeping at Home) -> Force Home
               - conditions:
@@ -176,7 +176,6 @@ action:
                       source_type: gps
                       gps: ["{{ gps_lat }}", "{{ gps_long }}"]
                       gps_accuracy: "{{ gps_acc }}"
-                      battery: "{{ batt }}"
 
     # ----------------------------------------------------------------
     # SCENARIO 4: GPS SAYS AWAY (Pass-through)
@@ -189,4 +188,3 @@ action:
           source_type: gps
           gps: ["{{ gps_lat }}", "{{ gps_long }}"]
           gps_accuracy: "{{ gps_acc }}"
-          battery: "{{ batt }}"
