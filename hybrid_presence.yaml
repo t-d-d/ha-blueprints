@@ -1,15 +1,15 @@
 blueprint:
   name: Hybrid Presence
   description: >
-    The ultimate tracker.
+    The ultimate tracker for iOS and Android.
     
     1. Multiple SSIDs: Supports list of home networks.
     2. Alien WiFi: Connecting to a non-home WiFi triggers INSTANT Away.
-    3. WiFi State Guard: If you toggle WiFi off manually, the disconnect is IGNORED.
-    4. Grace Period: Protects against router reboots.
-    5. Battery Guard: Protects against dead phones.
+    3. Grace Period: Protects against router reboots.
+    4. Battery Guard: Protects against dead phones.
+    5. WiFi State Guard (Android Only): Ignores manual WiFi toggles.
     
-    REQUIRED: Companion App with 'WiFi Connection' AND 'WiFi State' sensors enabled.
+    REQUIRED: Companion App with 'WiFi Connection' / 'SSID' sensor enabled.
   domain: automation
   input:
     gps_tracker:
@@ -20,16 +20,20 @@ blueprint:
           integration: mobile_app
     wifi_sensor:
       name: WiFi Connection Sensor (SSID)
+      description: Android = 'wifi_connection', iOS = 'ssid'
       selector:
         entity:
           domain: sensor
           integration: mobile_app
     wifi_state:
-      name: WiFi State Sensor (Enabled/Disabled)
-      description: The sensor that reports if WiFi is on or off (e.g. sensor.pixel_wifi_state).
+      name: WiFi State Sensor (Android Only)
+      description: >
+        Optional. The binary sensor indicating if WiFi radio is On or Off. 
+        Leave empty for iOS.
+      default: ""
       selector:
         entity:
-          domain: sensor
+          domain: binary_sensor
           integration: mobile_app
     home_ssids:
       name: Home SSIDs
@@ -79,11 +83,20 @@ variables:
   
   # LIVE STATES
   current_ssid: "{{ states(wifi_entity) | default('unknown') }}"
-  # Check if WiFi radio is explicitly disabled/off
+  
+  # WIFI STATE LOGIC (Universal)
+  # If entity is empty (iOS), radio_off is always False (Guard skipped).
+  # If entity exists (Android), check if it is 'off'.
   radio_off: >
-    {{ states(wifi_state_entity) in ['Disabled', 'disabled', 'off', 'Off'] }}
+    {% if wifi_state_entity != "" %}
+      {{ states(wifi_state_entity) == 'off' }}
+    {% else %}
+      false
+    {% endif %}
     
   wifi_connected_state: "<not connected>" 
+  # Note: iOS 'SSID' sensor reports "Not Connected" (No brackets) sometimes. 
+  # We handle this by checking if it is NOT in the home list.
   
   # TIMESTAMPS
   wifi_time: "{{ as_timestamp(states[wifi_entity].last_changed) | default(0) }}"
@@ -123,10 +136,11 @@ action:
       - conditions:
           - condition: template
             value_template: >
-              {{ current_ssid != wifi_connected_state 
-                 and current_ssid not in home_ssid_list 
+              {{ current_ssid not in home_ssid_list 
                  and current_ssid != 'unknown' 
-                 and current_ssid != 'unavailable' }}
+                 and current_ssid != 'unavailable'
+                 and current_ssid != '<not connected>'
+                 and current_ssid != 'Not Connected' }}
         sequence:
           - service: device_tracker.see
             data:
@@ -149,7 +163,7 @@ action:
                   - condition: template
                     value_template: "{{ wifi_time > gps_time }}"
                 sequence:
-                  # GUARD 1: WiFi Radio Manually Disabled? -> IGNORE.
+                  # GUARD 1: WiFi Radio Manually Disabled? (Android Only)
                   - if:
                       - condition: template
                         value_template: "{{ radio_off }}"
@@ -202,4 +216,4 @@ action:
           location_name: "{{ states(gps_entity) }}"
           source_type: gps
           gps: ["{{ gps_lat }}", "{{ gps_long }}"]
-          gps_accuracy: "{{ gps_acc }}"
+          gps_accuracy: "{{ gps_
