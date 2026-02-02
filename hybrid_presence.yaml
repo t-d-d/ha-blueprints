@@ -1,0 +1,184 @@
+blueprint:
+  name: Hybrid Presence
+  description: >
+    The ultimate tracker.
+    
+    1. Multiple SSIDs: Supports list of home networks.
+    2. Alien WiFi: Connecting to a non-home WiFi triggers INSTANT Away.
+    3. Grace Period: Protects against router reboots.
+    4. Battery Guard: Protects against dead phones.
+    
+    REQUIRED: Companion App with 'WiFi Connection' sensor enabled.
+  domain: automation
+  mode: restart
+  input:
+    gps_tracker:
+      name: Companion App Tracker
+      selector:
+        entity:
+          domain: device_tracker
+          integration: mobile_app
+    wifi_sensor:
+      name: WiFi Connection Sensor
+      selector:
+        entity:
+          domain: sensor
+          integration: mobile_app
+    home_ssids:
+      name: Home SSIDs
+      description: >
+        A comma-separated list of your home networks. 
+        Example: MyHome, MyHome_5G, Guest_Network
+      selector:
+        text:
+    person_id:
+      name: Person ID
+      default: user_1
+    grace_period:
+      name: Away Grace Period (Seconds)
+      description: Wait time for WiFi drops (ignored if connected to Alien WiFi).
+      default: 120
+      selector:
+        number:
+          min: 0
+          max: 600
+          unit_of_measurement: seconds
+
+trigger:
+  - platform: state
+    entity_id: !input gps_tracker
+  - platform: state
+    entity_id: !input wifi_sensor
+  - platform: homeassistant
+    event: start
+
+variables:
+  gps_entity: !input gps_tracker
+  wifi_entity: !input wifi_sensor
+  # Convert input string "A, B" into list ['A', 'B'] for matching
+  ssid_input: !input home_ssids
+  home_ssid_list: >
+    {{ ssid_input.split(',') | map('trim') | list }}
+  
+  user_id: !input person_id
+  new_tracker_id: "hybrid_{{ user_id | slugify }}"
+  grace_sec: !input grace_period
+  
+  # LIVE STATES
+  current_ssid: "{{ states(wifi_entity) }}"
+  wifi_connected_state: "<not connected>" # Default HA state for disconnected
+  
+  # TIMESTAMPS
+  wifi_time: "{{ as_timestamp(states[wifi_entity].last_changed) | default(0) }}"
+  gps_time: "{{ as_timestamp(states[gps_entity].last_updated) | default(0) }}"
+
+  # DATA SNAPSHOT
+  gps_lat: "{{ state_attr(gps_entity, 'latitude') | default(0) }}"
+  gps_long: "{{ state_attr(gps_entity, 'longitude') | default(0) }}"
+  gps_acc: "{{ state_attr(gps_entity, 'gps_accuracy') | default(0) }}"
+  batt: "{{ state_attr(gps_entity, 'battery_level') | default(0) }}"
+  
+  home_lat: "{{ state_attr('zone.home', 'latitude') }}"
+  home_long: "{{ state_attr('zone.home', 'longitude') }}"
+
+action:
+  - choose:
+      # ----------------------------------------------------------------
+      # SCENARIO 1: CONNECTED TO HOME SSID (Any of them)
+      # Action: Force Home + Snap to Zone Center
+      # ----------------------------------------------------------------
+      - conditions:
+          - condition: template
+            value_template: "{{ current_ssid in home_ssid_list }}"
+        sequence:
+          - service: device_tracker.see
+            data:
+              dev_id: "{{ new_tracker_id }}"
+              location_name: home
+              source_type: router
+              gps: ["{{ home_lat }}", "{{ home_long }}"]
+              gps_accuracy: 10
+              battery: "{{ batt }}"
+
+      # ----------------------------------------------------------------
+      # SCENARIO 2: CONNECTED TO ALIEN WIFI (Office, Starbucks)
+      # Action: Force Away INSTANTLY (No Grace Period needed)
+      # ----------------------------------------------------------------
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ current_ssid != wifi_connected_state 
+                 and current_ssid not in home_ssid_list }}
+        sequence:
+          - service: device_tracker.see
+            data:
+              dev_id: "{{ new_tracker_id }}"
+              location_name: not_home
+              source_type: router # Router confirmed we are NOT home
+              gps: ["{{ gps_lat }}", "{{ gps_long }}"]
+              gps_accuracy: "{{ gps_acc }}"
+              battery: "{{ batt }}"
+
+      # ----------------------------------------------------------------
+      # SCENARIO 3: DISCONNECTED (Potential Leaving / Reboot / Sleep)
+      # ----------------------------------------------------------------
+      - conditions:
+          - condition: template
+            value_template: "{{ states(gps_entity) == 'home' }}"
+        sequence:
+          - choose:
+              # A. WiFi dropped RECENTLY -> Check Battery & Wait Grace Period
+              - conditions:
+                  - condition: template
+                    value_template: "{{ wifi_time > gps_time }}"
+                sequence:
+                  # Battery Guard: If < 5%, assume dead phone, stay Home.
+                  - if:
+                      - condition: template
+                        value_template: "{{ batt | int(0) < 5 }}"
+                    then:
+                      - stop: "Phone battery critical. Assuming dead phone."
+                  
+                  # Grace Period: Wait for router reboot
+                  - delay: "{{ grace_sec }}"
+                  
+                  # Re-Check: Still disconnected?
+                  - if:
+                      - condition: template
+                        value_template: "{{ states(wifi_entity) not in home_ssid_list }}"
+                    then:
+                      - service: device_tracker.see
+                        data:
+                          dev_id: "{{ new_tracker_id }}"
+                          location_name: not_home
+                          source_type: router
+                          gps: ["{{ gps_lat }}", "{{ gps_long }}"]
+                          gps_accuracy: "{{ gps_acc }}"
+                          battery: "{{ batt }}"
+
+              # B. GPS updated RECENTLY (Sleeping at Home) -> Force Home
+              - conditions:
+                  - condition: template
+                    value_template: "{{ gps_time > wifi_time }}"
+                sequence:
+                  - service: device_tracker.see
+                    data:
+                      dev_id: "{{ new_tracker_id }}"
+                      location_name: home
+                      source_type: gps
+                      gps: ["{{ gps_lat }}", "{{ gps_long }}"]
+                      gps_accuracy: "{{ gps_acc }}"
+                      battery: "{{ batt }}"
+
+    # ----------------------------------------------------------------
+    # SCENARIO 4: GPS SAYS AWAY (Pass-through)
+    # ----------------------------------------------------------------
+    default:
+      - service: device_tracker.see
+        data:
+          dev_id: "{{ new_tracker_id }}"
+          location_name: "{{ states(gps_entity) }}"
+          source_type: gps
+          gps: ["{{ gps_lat }}", "{{ gps_long }}"]
+          gps_accuracy: "{{ gps_acc }}"
+          battery: "{{ batt }}"
