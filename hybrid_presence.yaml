@@ -66,7 +66,8 @@ variables:
     {{ ssid_input.split(',') | map('trim') | list }}
   
   user_id: !input person_id
-  new_tracker_id: "hybrid_{{ user_id | slugify }}"
+  # CHANGE: Naming convention swapped to [user]_hybrid
+  new_tracker_id: "{{ user_id | slugify }}_hybrid"
   grace_sec: !input grace_period
   
   # LIVE STATES
@@ -80,7 +81,8 @@ variables:
   # DATA SNAPSHOT
   gps_lat: "{{ state_attr(gps_entity, 'latitude') | default(0) }}"
   gps_long: "{{ state_attr(gps_entity, 'longitude') | default(0) }}"
-  # We still check battery for the "Dead Phone" guard, but we don't sync it to the tracker.
+  
+  # Dead Phone Guard (We check this but don't sync it)
   batt: "{{ state_attr(gps_entity, 'battery_level') | int(default=0) }}"
   
   # Force integer to prevent null errors on accuracy
@@ -106,7 +108,6 @@ action:
               source_type: router
               gps: ["{{ home_lat }}", "{{ home_long }}"]
               gps_accuracy: 10
-              # Battery sync removed
 
       # ----------------------------------------------------------------
       # SCENARIO 2: CONNECTED TO ALIEN WIFI (Office, Starbucks)
