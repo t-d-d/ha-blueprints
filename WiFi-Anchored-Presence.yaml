@@ -5,8 +5,8 @@ blueprint:
     
     1. ANCHORS you to 'Home' when WiFi is connected (Stops GPS drift).
     2. RELEASES you to GPS when you leave.
-    3. PROTECTS against router reboots and dead batteries.
-    4. AUTO-NAMES the new tracker (e.g. device_tracker.pixel_7_anchor).
+    3. AUTO-NAMES the new tracker (e.g. device_tracker.pixel_7_anchor).
+    4. AUTO-INITIALIZES immediately upon saving.
     
     REQUIRED: Companion App with 'WiFi Connection' sensor enabled.
   domain: automation
@@ -57,12 +57,18 @@ mode: restart
 max_exceeded: silent
 
 trigger:
+  # 1. Standard: State changes
   - platform: state
     entity_id: !input gps_tracker
   - platform: state
     entity_id: !input wifi_sensor
+  # 2. Maintenance: System startup
   - platform: homeassistant
     event: start
+  # 3. Setup: Run immediately when ANY automation is saved/reloaded
+  #    This ensures the tracker is created instantly without manual running.
+  - platform: event
+    event_type: automation_reloaded
 
 variables:
   gps_entity: !input gps_tracker
@@ -144,7 +150,7 @@ action:
               gps_accuracy: "{{ gps_acc }}"
 
       # ----------------------------------------------------------------
-      # SCENARIO 3: DISCONNECTED (Potential Leaving)
+      # SCENARIO 3: DISCONNECTED (Check Guards)
       # ----------------------------------------------------------------
       - conditions:
           - condition: template
