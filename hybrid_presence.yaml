@@ -3,13 +3,13 @@ blueprint:
   description: >
     The ultimate tracker for iOS and Android.
     
-    1. Multiple SSIDs: Supports list of home networks.
+    1. Supports Multiple SSIDs.
     2. Alien WiFi: Connecting to a non-home WiFi triggers INSTANT Away.
     3. Grace Period: Protects against router reboots.
     4. Battery Guard: Protects against dead phones.
     5. WiFi State Guard (Android Only): Ignores manual WiFi toggles.
     
-    REQUIRED: Companion App with 'WiFi Connection' / 'SSID' sensor enabled.
+    REQUIRED: Companion App with 'WiFi Connection' sensor enabled.
   domain: automation
   input:
     gps_tracker:
@@ -63,8 +63,6 @@ trigger:
     entity_id: !input gps_tracker
   - platform: state
     entity_id: !input wifi_sensor
-  - platform: state
-    entity_id: !input wifi_state
   - platform: homeassistant
     event: start
 
@@ -88,7 +86,7 @@ variables:
   # If entity is empty (iOS), radio_off is always False (Guard skipped).
   # If entity exists (Android), check if it is 'off'.
   radio_off: >
-    {% if wifi_state_entity != "" %}
+    {% if wifi_state_entity != none and wifi_state_entity != "" %}
       {{ states(wifi_state_entity) == 'off' }}
     {% else %}
       false
@@ -216,4 +214,4 @@ action:
           location_name: "{{ states(gps_entity) }}"
           source_type: gps
           gps: ["{{ gps_lat }}", "{{ gps_long }}"]
-          gps_accuracy: "{{ gps_
+          gps_accuracy: "{{ gps_acc }}"
