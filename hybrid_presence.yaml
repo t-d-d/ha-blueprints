@@ -5,10 +5,11 @@ blueprint:
     
     1. Multiple SSIDs: Supports list of home networks.
     2. Alien WiFi: Connecting to a non-home WiFi triggers INSTANT Away.
-    3. Grace Period: Protects against router reboots.
-    4. Battery Guard: Protects against dead phones.
+    3. WiFi State Guard: If you toggle WiFi off manually, the disconnect is IGNORED.
+    4. Grace Period: Protects against router reboots.
+    5. Battery Guard: Protects against dead phones.
     
-    REQUIRED: Companion App with 'WiFi Connection' sensor enabled.
+    REQUIRED: Companion App with 'WiFi Connection' AND 'WiFi State' sensors enabled.
   domain: automation
   input:
     gps_tracker:
@@ -18,16 +19,21 @@ blueprint:
           domain: device_tracker
           integration: mobile_app
     wifi_sensor:
-      name: WiFi Connection Sensor
+      name: WiFi Connection Sensor (SSID)
+      selector:
+        entity:
+          domain: sensor
+          integration: mobile_app
+    wifi_state:
+      name: WiFi State Sensor (Enabled/Disabled)
+      description: The sensor that reports if WiFi is on or off (e.g. sensor.pixel_wifi_state).
       selector:
         entity:
           domain: sensor
           integration: mobile_app
     home_ssids:
       name: Home SSIDs
-      description: >
-        A comma-separated list of your home networks. 
-        Example: MyHome, MyHome_5G, Guest_Network
+      description: Comma-separated list (e.g. MyHome, MyHome_5G).
       selector:
         text:
     person_id:
@@ -35,7 +41,6 @@ blueprint:
       default: user_1
     grace_period:
       name: Away Grace Period (Seconds)
-      description: Wait time for WiFi drops (ignored if connected to Alien WiFi).
       default: 120
       selector:
         number:
@@ -54,24 +59,30 @@ trigger:
     entity_id: !input gps_tracker
   - platform: state
     entity_id: !input wifi_sensor
+  - platform: state
+    entity_id: !input wifi_state
   - platform: homeassistant
     event: start
 
 variables:
   gps_entity: !input gps_tracker
   wifi_entity: !input wifi_sensor
+  wifi_state_entity: !input wifi_state
+  
   ssid_input: !input home_ssids
-  # Convert input string "A, B" into list ['A', 'B'] for matching
   home_ssid_list: >
     {{ ssid_input.split(',') | map('trim') | list }}
   
   user_id: !input person_id
-  # CHANGE: Naming convention swapped to [user]_hybrid
   new_tracker_id: "{{ user_id | slugify }}_hybrid"
   grace_sec: !input grace_period
   
   # LIVE STATES
   current_ssid: "{{ states(wifi_entity) | default('unknown') }}"
+  # Check if WiFi radio is explicitly disabled/off
+  radio_off: >
+    {{ states(wifi_state_entity) in ['Disabled', 'disabled', 'off', 'Off'] }}
+    
   wifi_connected_state: "<not connected>" 
   
   # TIMESTAMPS
@@ -81,11 +92,7 @@ variables:
   # DATA SNAPSHOT
   gps_lat: "{{ state_attr(gps_entity, 'latitude') | default(0) }}"
   gps_long: "{{ state_attr(gps_entity, 'longitude') | default(0) }}"
-  
-  # Dead Phone Guard (We check this but don't sync it)
   batt: "{{ state_attr(gps_entity, 'battery_level') | int(default=0) }}"
-  
-  # Force integer to prevent null errors on accuracy
   gps_acc: "{{ state_attr(gps_entity, 'gps_accuracy') | int(default=0) }}"
   
   home_lat: "{{ state_attr('zone.home', 'latitude') }}"
@@ -130,19 +137,26 @@ action:
               gps_accuracy: "{{ gps_acc }}"
 
       # ----------------------------------------------------------------
-      # SCENARIO 3: DISCONNECTED (Potential Leaving / Reboot / Sleep)
+      # SCENARIO 3: DISCONNECTED (Potential Leaving / Reboot / Sleep / Toggle)
       # ----------------------------------------------------------------
       - conditions:
           - condition: template
             value_template: "{{ states(gps_entity) == 'home' }}"
         sequence:
           - choose:
-              # A. WiFi dropped RECENTLY -> Check Battery & Wait Grace Period
+              # A. WiFi dropped RECENTLY -> Check Guards & Wait Grace Period
               - conditions:
                   - condition: template
                     value_template: "{{ wifi_time > gps_time }}"
                 sequence:
-                  # Battery Guard: If < 5%, assume dead phone, stay Home.
+                  # GUARD 1: WiFi Radio Manually Disabled? -> IGNORE.
+                  - if:
+                      - condition: template
+                        value_template: "{{ radio_off }}"
+                    then:
+                      - stop: "WiFi manually disabled. Ignoring disconnect."
+
+                  # GUARD 2: Battery Critical? -> Assume Dead Phone (Stay Home)
                   - if:
                       - condition: template
                         value_template: "{{ batt < 5 }}"
