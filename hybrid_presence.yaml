@@ -10,7 +10,6 @@ blueprint:
     
     REQUIRED: Companion App with 'WiFi Connection' sensor enabled.
   domain: automation
-  mode: restart
   input:
     gps_tracker:
       name: Companion App Tracker
@@ -44,6 +43,12 @@ blueprint:
           max: 600
           unit_of_measurement: seconds
 
+# ----------------------------------------------------------------
+# AUTOMATION CONFIGURATION (Root Level)
+# ----------------------------------------------------------------
+mode: restart
+max_exceeded: silent
+
 trigger:
   - platform: state
     entity_id: !input gps_tracker
@@ -65,8 +70,9 @@ variables:
   grace_sec: !input grace_period
   
   # LIVE STATES
-  current_ssid: "{{ states(wifi_entity) }}"
-  wifi_connected_state: "<not connected>" # Default HA state for disconnected
+  # Handle case where wifi sensor might be unavailable/unknown
+  current_ssid: "{{ states(wifi_entity) | default('unknown') }}"
+  wifi_connected_state: "<not connected>" 
   
   # TIMESTAMPS
   wifi_time: "{{ as_timestamp(states[wifi_entity].last_changed) | default(0) }}"
@@ -108,13 +114,15 @@ action:
           - condition: template
             value_template: >
               {{ current_ssid != wifi_connected_state 
-                 and current_ssid not in home_ssid_list }}
+                 and current_ssid not in home_ssid_list 
+                 and current_ssid != 'unknown' 
+                 and current_ssid != 'unavailable' }}
         sequence:
           - service: device_tracker.see
             data:
               dev_id: "{{ new_tracker_id }}"
               location_name: not_home
-              source_type: router # Router confirmed we are NOT home
+              source_type: router
               gps: ["{{ gps_lat }}", "{{ gps_long }}"]
               gps_accuracy: "{{ gps_acc }}"
               battery: "{{ batt }}"
