@@ -1,12 +1,12 @@
 blueprint:
   name: WiFi-Anchored Presence
   description: >
-    The definitive presence tracker (Simplified).
+    The definitive presence tracker (Refined).
     
     1. ANCHORS you to 'Home' when WiFi is connected.
     2. RELEASES you to GPS when you leave.
-    3. AUTO-DETECTS Battery and WiFi State sensors (based on Tracker name).
-    4. AUTO-NAMES the new tracker (e.g. device_tracker.pixel_7_anchor).
+    3. INFLATES accuracy radius when 'Away' is inferred from connection drop (v7.1).
+    4. AUTO-DETECTS Battery and WiFi State sensors.
     
     REQUIRED: Companion App with 'WiFi Connection' sensor enabled.
   domain: automation
@@ -21,7 +21,7 @@ blueprint:
     wifi_sensor:
       name: WiFi Connection Sensor (SSID)
       description: >
-        Must be selected manually to handle 'wifi' vs 'wi_fi' naming variations.
+        Must be selected manually. 
         Android: 'sensor.[name]_wifi_connection'
       selector:
         entity:
@@ -49,15 +49,12 @@ mode: restart
 max_exceeded: silent
 
 trigger:
-  # 1. Standard: State changes (Must be explicit)
   - platform: state
     entity_id: !input gps_tracker
   - platform: state
     entity_id: !input wifi_sensor
-  # 2. Maintenance: System startup
   - platform: homeassistant
     event: start
-  # 3. Setup: Run immediately when ANY automation is saved/reloaded
   - platform: event
     event_type: automation_reloaded
 
@@ -70,17 +67,11 @@ variables:
     {{ ssid_input.split(',') | map('trim') | list }}
   
   # -----------------------------------------------------------
-  # AUTO-DISCOVERY LOGIC
-  # 1. Extract base name: device_tracker.nokia_g21 -> nokia_g21
-  # 2. Construct sensor names dynamically.
+  # AUTO-DISCOVERY
   # -----------------------------------------------------------
   base_name: "{{ gps_entity.split('.')[1] }}"
   new_tracker_id: "{{ base_name }}_anchor"
   
-  # We guess the entity IDs.
-  # If your device is named 'nokia_g21', we look for:
-  # sensor.nokia_g21_battery_level
-  # binary_sensor.nokia_g21_wifi_state
   batt_entity_id: "sensor.{{ base_name }}_battery_level"
   wifi_state_entity_id: "binary_sensor.{{ base_name }}_wifi_state"
 
@@ -89,12 +80,7 @@ variables:
   # LIVE STATES
   current_ssid: "{{ states(wifi_entity) | default('unknown') }}"
   
-  # -----------------------------------------------------------
-  # SENSOR CHECKING (Fail-Safe)
-  # -----------------------------------------------------------
-  
-  # WIFI STATE (Android Only)
-  # Check if the guessed entity actually exists and is 'off'
+  # GUARDS
   radio_off: >
     {% if states(wifi_state_entity_id) == 'off' %}
       true
@@ -102,8 +88,6 @@ variables:
       false
     {% endif %}
 
-  # BATTERY CHECK
-  # If the guessed sensor is unknown/missing, default to 100 (Safe).
   batt_level: >
     {{ states(batt_entity_id) | int(default=100) }}
     
@@ -169,22 +153,19 @@ action:
                   - condition: template
                     value_template: "{{ wifi_time > gps_time }}"
                 sequence:
-                  # GUARD: Manual Toggle (Auto-Detected)
                   - if:
                       - condition: template
                         value_template: "{{ radio_off }}"
                     then:
                       - stop: "WiFi manually disabled. Staying Anchored."
 
-                  # GUARD: Dead Battery (Auto-Detected)
-                  # If sensor was not found, batt_level is 100, so this check safely fails.
                   - if:
                       - condition: template
                         value_template: "{{ batt_level < 5 }}"
                     then:
                       - stop: "Battery critical. Staying Anchored."
                   
-                  # Grace Period (Router Reboot Protection)
+                  # Grace Period
                   - delay: "{{ grace_sec }}"
                   
                   # Re-Check
@@ -198,7 +179,8 @@ action:
                           location_name: not_home
                           source_type: router
                           gps: ["{{ gps_lat }}", "{{ gps_long }}"]
-                          gps_accuracy: "{{ gps_acc }}"
+                          # FIX: Inflate accuracy to 2000m to represent uncertainty
+                          gps_accuracy: 2000
 
               # B. GPS updated RECENTLY -> Trust GPS
               - conditions:
