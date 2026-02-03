@@ -1,12 +1,12 @@
 blueprint:
   name: WiFi-Anchored Presence
   description: >
-    The definitive presence tracker (Refined).
+    The definitive presence tracker (Stale GPS Fix).
     
     1. ANCHORS you to 'Home' when WiFi is connected.
     2. RELEASES you to GPS when you leave.
-    3. INFLATES accuracy radius when 'Away' is inferred from connection drop (v7.1).
-    4. AUTO-DETECTS Battery and WiFi State sensors.
+    3. SCENARIO 2: Handles Alien WiFi with Stale GPS detection (inflates accuracy + pings).
+    4. SCENARIO 3: Trust & Verify (Grace Period -> Away -> Ping).
     
     REQUIRED: Companion App with 'WiFi Connection' sensor enabled.
   domain: automation
@@ -20,9 +20,7 @@ blueprint:
           integration: mobile_app
     wifi_sensor:
       name: WiFi Connection Sensor (SSID)
-      description: >
-        Must be selected manually. 
-        Android: 'sensor.[name]_wifi_connection'
+      description: Android = 'sensor.[name]_wifi_connection', iOS = 'sensor.[name]_ssid'
       selector:
         entity:
           domain: sensor
@@ -33,9 +31,20 @@ blueprint:
       selector:
         text:
     grace_period:
-      name: Away Grace Period (Seconds)
-      description: Wait time before marking Away if WiFi drops.
+      name: Grace Period (Before marking Away)
+      description: Time to wait for router reboots before marking 'Away' (Scenario 3).
       default: 120
+      selector:
+        number:
+          min: 0
+          max: 600
+          unit_of_measurement: seconds
+    ping_delay:
+      name: Getaway Period (Before GPS Ping)
+      description: >
+        Time to wait AFTER marking 'Away' before requesting a GPS update. 
+        Gives the user time to drive away from the house zone.
+      default: 180
       selector:
         number:
           min: 0
@@ -67,27 +76,22 @@ variables:
     {{ ssid_input.split(',') | map('trim') | list }}
   
   # -----------------------------------------------------------
-  # AUTO-DISCOVERY
+  # AUTO-DISCOVERY & NAMING
   # -----------------------------------------------------------
   base_name: "{{ gps_entity.split('.')[1] }}"
   new_tracker_id: "{{ base_name }}_anchor"
+  notify_service: "mobile_app_{{ base_name }}"
   
   batt_entity_id: "sensor.{{ base_name }}_battery_level"
-  wifi_state_entity_id: "binary_sensor.{{ base_name }}_wifi_state"
 
   grace_sec: !input grace_period
+  ping_sec: !input ping_delay
   
   # LIVE STATES
   current_ssid: "{{ states(wifi_entity) | default('unknown') }}"
+  gps_state_is_home: "{{ states(gps_entity) == 'home' }}"
   
   # GUARDS
-  radio_off: >
-    {% if states(wifi_state_entity_id) == 'off' %}
-      true
-    {% else %}
-      false
-    {% endif %}
-
   batt_level: >
     {{ states(batt_entity_id) | int(default=100) }}
     
@@ -132,20 +136,35 @@ action:
                  and current_ssid != '<not connected>'
                  and current_ssid != 'Not Connected' }}
         sequence:
+          # A. Force Update
           - service: device_tracker.see
             data:
               dev_id: "{{ new_tracker_id }}"
               location_name: not_home
               source_type: router
               gps: ["{{ gps_lat }}", "{{ gps_long }}"]
-              gps_accuracy: "{{ gps_acc }}"
+              # FIX: If GPS still says 'home' (stale), inflate accuracy to 2000.
+              # Otherwise, use the real GPS accuracy.
+              gps_accuracy: >
+                {% if gps_state_is_home %} 2000 {% else %} {{ gps_acc }} {% endif %}
+
+          # B. Self-Correction (New)
+          # If the GPS was stale, we ping the phone now to get the REAL location
+          # (e.g. update the map from 'House' to 'Starbucks').
+          - if:
+              - condition: template
+                value_template: "{{ gps_state_is_home }}"
+            then:
+              - service: "notify.{{ notify_service }}"
+                data:
+                  message: "request_location_update"
 
       # ----------------------------------------------------------------
-      # SCENARIO 3: DISCONNECTED (Check Guards)
+      # SCENARIO 3: DISCONNECTED (Potential Leaving)
       # ----------------------------------------------------------------
       - conditions:
           - condition: template
-            value_template: "{{ states(gps_entity) == 'home' }}"
+            value_template: "{{ gps_state_is_home }}"
         sequence:
           - choose:
               # A. WiFi dropped RECENTLY -> Check Guards & Wait
@@ -153,34 +172,32 @@ action:
                   - condition: template
                     value_template: "{{ wifi_time > gps_time }}"
                 sequence:
-                  - if:
-                      - condition: template
-                        value_template: "{{ radio_off }}"
-                    then:
-                      - stop: "WiFi manually disabled. Staying Anchored."
-
+                  # 1. GUARD: Dead Battery? STOP.
                   - if:
                       - condition: template
                         value_template: "{{ batt_level < 5 }}"
                     then:
                       - stop: "Battery critical. Staying Anchored."
                   
-                  # Grace Period
+                  # 2. WAIT 1: Grace Period (Router Reboot check)
                   - delay: "{{ grace_sec }}"
                   
-                  # Re-Check
-                  - if:
-                      - condition: template
-                        value_template: "{{ states(wifi_entity) not in home_ssid_list }}"
-                    then:
-                      - service: device_tracker.see
-                        data:
-                          dev_id: "{{ new_tracker_id }}"
-                          location_name: not_home
-                          source_type: router
-                          gps: ["{{ gps_lat }}", "{{ gps_long }}"]
-                          # FIX: Inflate accuracy to 2000m to represent uncertainty
-                          gps_accuracy: 2000
+                  # 3. MARK AWAY (Provisional)
+                  - service: device_tracker.see
+                    data:
+                      dev_id: "{{ new_tracker_id }}"
+                      location_name: not_home
+                      source_type: router
+                      gps: ["{{ gps_lat }}", "{{ gps_long }}"]
+                      gps_accuracy: 2000
+
+                  # 4. WAIT 2: Getaway Period (Drive away from house)
+                  - delay: "{{ ping_sec }}"
+
+                  # 5. VERIFY: Ping GPS now to confirm exact location.
+                  - service: "notify.{{ notify_service }}"
+                    data:
+                      message: "request_location_update"
 
               # B. GPS updated RECENTLY -> Trust GPS
               - conditions:
