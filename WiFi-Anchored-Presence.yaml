@@ -1,12 +1,12 @@
 blueprint:
   name: WiFi-Anchored Presence
   description: >
-    The definitive presence tracker. 
+    The definitive presence tracker (Simplified).
     
-    1. ANCHORS you to 'Home' when WiFi is connected (Stops GPS drift).
+    1. ANCHORS you to 'Home' when WiFi is connected.
     2. RELEASES you to GPS when you leave.
-    3. AUTO-NAMES the new tracker (e.g. device_tracker.pixel_7_anchor).
-    4. AUTO-INITIALIZES immediately upon saving.
+    3. AUTO-DETECTS Battery and WiFi State sensors (based on Tracker name).
+    4. AUTO-NAMES the new tracker (e.g. device_tracker.pixel_7_anchor).
     
     REQUIRED: Companion App with 'WiFi Connection' sensor enabled.
   domain: automation
@@ -20,29 +20,21 @@ blueprint:
           integration: mobile_app
     wifi_sensor:
       name: WiFi Connection Sensor (SSID)
-      description: Android = 'wifi_connection', iOS = 'ssid'
+      description: >
+        Must be selected manually to handle 'wifi' vs 'wi_fi' naming variations.
+        Android: 'sensor.[name]_wifi_connection'
       selector:
         entity:
           domain: sensor
           integration: mobile_app
-    wifi_state:
-      name: WiFi State Sensor (Android Only)
-      description: >
-        Optional. The binary sensor indicating if WiFi radio is On or Off. 
-        Leave empty for iOS.
-      default: ""
-      selector:
-        entity:
-          domain: binary_sensor
-          integration: mobile_app
     home_ssids:
       name: Home SSIDs
-      description: Comma-separated list of your home networks (e.g. MyHome, MyHome_5G).
+      description: Comma-separated list of your home networks.
       selector:
         text:
     grace_period:
       name: Away Grace Period (Seconds)
-      description: Wait time before marking Away if WiFi drops (ignored if connected to Alien WiFi).
+      description: Wait time before marking Away if WiFi drops.
       default: 120
       selector:
         number:
@@ -57,7 +49,7 @@ mode: restart
 max_exceeded: silent
 
 trigger:
-  # 1. Standard: State changes
+  # 1. Standard: State changes (Must be explicit)
   - platform: state
     entity_id: !input gps_tracker
   - platform: state
@@ -66,38 +58,54 @@ trigger:
   - platform: homeassistant
     event: start
   # 3. Setup: Run immediately when ANY automation is saved/reloaded
-  #    This ensures the tracker is created instantly without manual running.
   - platform: event
     event_type: automation_reloaded
 
 variables:
   gps_entity: !input gps_tracker
   wifi_entity: !input wifi_sensor
-  wifi_state_entity: !input wifi_state
   
   ssid_input: !input home_ssids
   home_ssid_list: >
     {{ ssid_input.split(',') | map('trim') | list }}
   
   # -----------------------------------------------------------
-  # AUTO-NAMING LOGIC
-  # Input: device_tracker.pixel_7
-  # Result: pixel_7_anchor
+  # AUTO-DISCOVERY LOGIC
+  # 1. Extract base name: device_tracker.nokia_g21 -> nokia_g21
+  # 2. Construct sensor names dynamically.
   # -----------------------------------------------------------
-  new_tracker_id: "{{ gps_entity.split('.')[1] }}_anchor"
+  base_name: "{{ gps_entity.split('.')[1] }}"
+  new_tracker_id: "{{ base_name }}_anchor"
+  
+  # We guess the entity IDs.
+  # If your device is named 'nokia_g21', we look for:
+  # sensor.nokia_g21_battery_level
+  # binary_sensor.nokia_g21_wifi_state
+  batt_entity_id: "sensor.{{ base_name }}_battery_level"
+  wifi_state_entity_id: "binary_sensor.{{ base_name }}_wifi_state"
 
   grace_sec: !input grace_period
   
   # LIVE STATES
   current_ssid: "{{ states(wifi_entity) | default('unknown') }}"
   
-  # WIFI STATE LOGIC (Universal / Safe-Fail)
+  # -----------------------------------------------------------
+  # SENSOR CHECKING (Fail-Safe)
+  # -----------------------------------------------------------
+  
+  # WIFI STATE (Android Only)
+  # Check if the guessed entity actually exists and is 'off'
   radio_off: >
-    {% if wifi_state_entity != none and wifi_state_entity != "" %}
-      {{ states(wifi_state_entity) == 'off' }}
+    {% if states(wifi_state_entity_id) == 'off' %}
+      true
     {% else %}
       false
     {% endif %}
+
+  # BATTERY CHECK
+  # If the guessed sensor is unknown/missing, default to 100 (Safe).
+  batt_level: >
+    {{ states(batt_entity_id) | int(default=100) }}
     
   # TIMESTAMPS
   wifi_time: "{{ as_timestamp(states[wifi_entity].last_changed) | default(0) }}"
@@ -106,7 +114,6 @@ variables:
   # DATA SNAPSHOT
   gps_lat: "{{ state_attr(gps_entity, 'latitude') | default(0) }}"
   gps_long: "{{ state_attr(gps_entity, 'longitude') | default(0) }}"
-  batt: "{{ state_attr(gps_entity, 'battery_level') | int(default=0) }}"
   gps_acc: "{{ state_attr(gps_entity, 'gps_accuracy') | int(default=0) }}"
   
   home_lat: "{{ state_attr('zone.home', 'latitude') }}"
@@ -162,17 +169,18 @@ action:
                   - condition: template
                     value_template: "{{ wifi_time > gps_time }}"
                 sequence:
-                  # GUARD: Manual Toggle (Android)
+                  # GUARD: Manual Toggle (Auto-Detected)
                   - if:
                       - condition: template
                         value_template: "{{ radio_off }}"
                     then:
                       - stop: "WiFi manually disabled. Staying Anchored."
 
-                  # GUARD: Dead Battery
+                  # GUARD: Dead Battery (Auto-Detected)
+                  # If sensor was not found, batt_level is 100, so this check safely fails.
                   - if:
                       - condition: template
-                        value_template: "{{ batt < 5 }}"
+                        value_template: "{{ batt_level < 5 }}"
                     then:
                       - stop: "Battery critical. Staying Anchored."
                   
