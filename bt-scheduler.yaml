@@ -12,7 +12,12 @@ blueprint:
     3. Home Matrix (Schedule On/Off)
        - Default state.
 
-  source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-matrix-zones.yaml
+    MANUAL CHANGES:
+    Changing the temperature on a dial saves it as the new temperature for
+    the preset the room was in, and keeps the room in that preset.
+    (Better Thermostat 1.8.2+ drops to preset "none" on a manual change.)
+
+  source_url: https://github.com/t-d-d/ha-blueprints/blob/master/bt-scheduler.yaml
 
   input:
     target_bt:
@@ -104,6 +109,14 @@ blueprint:
       default: 'boost'
       selector: *preset_selector
 
+# Queued so a manual change is never dropped while a 5-minute run is going,
+# and the 5-minute run waits until a manual change has been saved.
+mode: queued
+max: 10
+
+trigger_variables:
+  tv_target: !input target_bt
+
 trigger:
 #  - platform: state
 #    entity_id: !input schedule_entity
@@ -111,6 +124,23 @@ trigger:
 #    entity_id: !input monitor_person
   - platform: time_pattern
     minutes: "/5"
+    id: tick
+
+  # Fires when one of this automation's Better Thermostats drops to preset
+  # "none", which is what Better Thermostat does on a manual temperature change.
+  - platform: template
+    id: manual_change
+    value_template: >-
+      {%- set t = tv_target if tv_target is mapping else {} -%}
+      {%- set e = t.get('entity_id', []) -%}{%- set e = [e] if e is string else e -%}
+      {%- set d = t.get('device_id', []) -%}{%- set d = [d] if d is string else d -%}
+      {%- set a = t.get('area_id', []) -%}{%- set a = [a] if a is string else a -%}
+      {%- set ns = namespace(ents=e | list) -%}
+      {%- for x in d %}{% set ns.ents = ns.ents + device_entities(x) %}{% endfor -%}
+      {%- for x in a %}{% set ns.ents = ns.ents + area_entities(x) %}{% endfor -%}
+      {%- set bts = ns.ents | select('match', '^climate\\.')
+            | select('in', integration_entities('better_thermostat')) | unique | list -%}
+      {{ bts | select('is_state_attr', 'preset_mode', 'none') | list | count > 0 }}
 
 variables:
   # 1. Load Inputs
@@ -158,11 +188,52 @@ variables:
     {% endif %}
 
 action:
-  # Safety Check: Do nothing if the logic somehow returns None/Empty
-  - condition: template
-    value_template: "{{ final_preset not in [none, '', 'None'] }}"
-    
-  - service: climate.set_preset_mode
-    target: !input target_bt
-    data:
-      preset_mode: "{{ final_preset }}"
+  - choose:
+      # --- MANUAL CHANGE: save the dial temperature into the preset ---
+      - conditions:
+          - condition: trigger
+            id: manual_change
+        sequence:
+          # Let rapid dial taps settle before reading the temperature.
+          - delay:
+              seconds: 2
+          - variables:
+              bt: "{{ trigger.to_state.entity_id }}"
+              old_preset: >-
+                {{ (trigger.from_state.attributes.preset_mode if trigger.from_state else none)
+                   | default('none', true) }}
+              new_temp: "{{ state_attr(bt, 'temperature') }}"
+              preset_number: >-
+                {{ device_entities(device_id(bt))
+                   | select('match', '^number\\..*_preset_' ~ old_preset ~ '$')
+                   | first | default('', true) }}
+          # Only act on a person's change (not another automation's), while the
+          # room is still out of its preset and the preset has a stored temperature.
+          - condition: template
+            value_template: >-
+              {{ trigger.to_state.context.parent_id is none
+                 and is_state_attr(bt, 'preset_mode', 'none')
+                 and old_preset not in ['none', '']
+                 and new_temp is number
+                 and preset_number != '' }}
+          - service: number.set_value
+            target:
+              entity_id: "{{ preset_number }}"
+            data:
+              value: "{{ new_temp }}"
+          - service: climate.set_preset_mode
+            target:
+              entity_id: "{{ bt }}"
+            data:
+              preset_mode: "{{ old_preset }}"
+
+    # --- SCHEDULE: apply the preset the matrix picks ---
+    default:
+      # Safety Check: Do nothing if the logic somehow returns None/Empty
+      - condition: template
+        value_template: "{{ final_preset not in [none, '', 'None'] }}"
+
+      - service: climate.set_preset_mode
+        target: !input target_bt
+        data:
+          preset_mode: "{{ final_preset }}"
