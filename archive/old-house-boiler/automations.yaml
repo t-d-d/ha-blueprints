@@ -1,0 +1,198 @@
+# Archived from the old house (Vaillant ecoTEC plus 630 on eBUS via ebusd/MQTT).
+# Copied unchanged from /config/automations.yaml on 2026-10-24. Not loaded.
+
+- id: '1703290773624'
+  alias: Boiler hot water schedule
+  description: 30 mins hot water heating before central heating
+  triggers:
+  - at: 03:00:00
+    trigger: time
+  - at: 09:00:00
+    trigger: time
+  - at: '13:00:00'
+    trigger: time
+  conditions:
+  - condition: state
+    entity_id: input_boolean.away_mode
+    state: 'off'
+  actions:
+  - data: {}
+    target:
+      entity_id: switch.hot_water
+    action: switch.turn_on
+  mode: single
+- id: '1703340512145'
+  alias: Boiler hot water boost
+  description: ''
+  triggers:
+  - entity_id:
+    - switch.hot_water
+    to: 'on'
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 4
+    trigger: state
+  - entity_id:
+    - input_button.hot_water_boost
+    trigger: state
+  conditions: []
+  actions:
+  - target:
+      entity_id: switch.central_heating
+    data: {}
+    action: switch.turn_off
+  - target:
+      entity_id:
+      - switch.hot_water
+      device_id: []
+      area_id: []
+    data: {}
+    action: switch.turn_on
+  - wait_for_trigger:
+    - trigger: state
+      entity_id:
+      - switch.hot_water
+      to: 'off'
+      for:
+        hours: 0
+        minutes: 0
+        seconds: 3
+    timeout:
+      hours: 0
+      minutes: 30
+      seconds: 0
+      milliseconds: 0
+  - if:
+    - condition: state
+      entity_id: switch.hot_water
+      state: 'on'
+    - condition: or
+      conditions:
+      - condition: state
+        entity_id: sensor.ecotec_plus_630_templimiter
+        state: 'on'
+      - condition: state
+        entity_id: sensor.ecotec_plus_630_status01_pumpstate
+        state: 'on'
+    then:
+    - wait_for_trigger:
+      - value_template: "{{\n  (((states('sensor.ecotec_plus_630_flowtemp_temp') |
+          float) +\n      (states('sensor.ecotec_plus_630_returntemp_temp') | float))
+          / 2)\n    >= (states('input_number.boiler_dhw_temp') | float)\n  or states('sensor.ecotec_plus_630_templimiter')
+          == 'off'\n  or states('sensor.ecotec_plus_630_status01_pumpstate') == 'off'\n}}"
+        trigger: template
+      - trigger: state
+        entity_id:
+        - switch.hot_water
+        to: 'off'
+        for:
+          hours: 0
+          minutes: 0
+          seconds: 3
+      timeout:
+        hours: 0
+        minutes: 45
+        seconds: 0
+        milliseconds: 0
+  - target:
+      device_id: []
+      area_id: []
+      entity_id: switch.hot_water
+    data: {}
+    action: switch.turn_off
+  mode: single
+- id: '1703409076529'
+  alias: Boiler flow temperature
+  description: ''
+  triggers:
+  - seconds: '03'
+    minutes: /1
+    trigger: time_pattern
+  - seconds: '33'
+    minutes: /1
+    trigger: time_pattern
+  - entity_id:
+    - switch.hot_water
+    - switch.central_heating
+    to: 'on'
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 0
+    trigger: state
+  - entity_id:
+    - sensor.boiler_radiator_boost_demand
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 2
+    trigger: state
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: state
+        entity_id: switch.hot_water
+        state: 'on'
+      sequence:
+      - data:
+          qos: '1'
+          retain: false
+          topic: ebusd/bai/SetModeOverride/set
+          payload: 0;75;75;-;-;0;0;1;-;0;0;0
+        action: mqtt.publish
+    default:
+    - data:
+        qos: '1'
+        retain: false
+        payload: 0;{{ states('sensor.boiler_desired_flow_temperature') }};{{ states('sensor.boiler_desired_flow_temperature')
+          }};-;-;0;0;1;-;0;0;0
+        topic: ebusd/bai/SetModeOverride/set
+      action: mqtt.publish
+  mode: restart
+- id: '1704131343997'
+  alias: Boiler central heating control
+  description: Turns on or off based on TRVs' demand
+  triggers:
+  - entity_id:
+    - sensor.boiler_radiator_demand
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 0
+    trigger: state
+  - entity_id:
+    - switch.hot_water
+    to: 'off'
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 0
+    from: 'on'
+    trigger: state
+  - entity_id:
+    - input_number.boiler_min_radiator_demand
+    trigger: state
+  conditions:
+  - condition: device
+    type: is_off
+    device_id: 249a9a9d6248c4c035b4503205119251
+    entity_id: cd5a89f79e5c1eb8c091d75362434a04
+    domain: switch
+  actions:
+  - if:
+    - condition: template
+      value_template: '{{ states(''sensor.boiler_radiator_demand'') | int >= states(''input_number.boiler_min_radiator_demand'')
+        | int }}'
+    then:
+    - target:
+        entity_id: switch.central_heating
+      data: {}
+      action: switch.turn_on
+    else:
+    - target:
+        entity_id: switch.central_heating
+      data: {}
+      action: switch.turn_off
+  mode: restart

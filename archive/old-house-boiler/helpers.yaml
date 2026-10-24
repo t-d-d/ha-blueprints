@@ -1,0 +1,58 @@
+# Archived from the old house. These were created in the UI (Settings >
+# Helpers); this is the same set written as YAML, with the values they held
+# on 2026-10-24.
+#
+# The keys here are the entity IDs the template sensors and automations use.
+# In the UI the curve exponent's ID was boiler_flow_exponent, but its entity
+# was input_number.boiler_weather_curve_exponent.
+#
+# input_number.boiler_min_radiator_demand is not here: it is still in use by
+# BT Scheduler Hall.
+
+input_number:
+  boiler_dhw_temp:            # was 70
+    name: Boiler DHW temp
+    min: 30
+    max: 70
+    step: 1
+    mode: box
+    unit_of_measurement: "°C"
+  boiler_weather_curve_min:   # was 20
+    name: Boiler weather curve min
+    min: 15
+    max: 30
+    step: 1
+    mode: box
+    unit_of_measurement: "°C"
+  boiler_design_outside_temperature:   # was 1.2
+    name: Boiler design outside temperature
+    min: -30
+    max: 20
+    step: 1
+    mode: box
+    unit_of_measurement: "°C"
+  boiler_design_flow_temperature:      # was 63
+    name: Boiler design flow temperature
+    min: 20
+    max: 85
+    step: 1
+    mode: box
+    unit_of_measurement: "°C"
+  boiler_weather_curve_exponent:       # was 1.0
+    name: Boiler weather curve exponent
+    min: 1
+    max: 2
+    step: 0.05
+    mode: box
+  boiler_boost_coeffient:              # was 30
+    name: Boiler room compensation weight
+    min: 0
+    max: 100
+    step: 1
+    mode: box
+    unit_of_measurement: "%"
+
+input_button:
+  hot_water_boost:
+    name: Boost hot water
+    icon: mdi:shower-head

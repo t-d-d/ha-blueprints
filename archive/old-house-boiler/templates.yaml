@@ -1,0 +1,32 @@
+# Archived from the old house. Copied unchanged from
+# /config/templates/templates.yaml on 2026-10-24. Still loaded in HA when archived.
+
+- sensor:
+    - name: boiler_flow_boost_coefficient
+      state_class: measurement
+      unit_of_measurement: "%"
+      state: >-
+        {% set data = namespace(temperatureDeltas = [0.0]) %}
+        {% for thermostat in expand(integration_entities('better_thermostat'))
+          | selectattr('attributes.hvac_action', 'ne', 'off')
+          | selectattr('attributes.window_open', 'eq', false) %}
+          {% set data.temperatureDeltas = data.temperatureDeltas + [(thermostat.attributes.temperature) - (thermostat.attributes.current_temperature)] %}
+        {% endfor %}
+        {{ (100 + data.temperatureDeltas | max * states('input_number.boiler_boost_coeffient') | float) | round(0) }}
+
+    - name: boiler_desired_flow_temperature
+      state_class: measurement
+      unit_of_measurement: °C
+      state: >-
+        {% set curveExponent = states('input_number.boiler_weather_curve_exponent') | float %}
+        {% set curveMinT = states('input_number.boiler_weather_curve_min') | float %}        
+        {% set designOutsideT = states('input_number.boiler_design_outside_temperature') | float %}
+        {% set designFlowT = states('input_number.boiler_design_flow_temperature') | float %}
+        {% set coefficient = (designFlowT - curveMinT) / ((curveMinT - designOutsideT) ** curveExponent) %}
+        {% set deltaT = [ curveMinT - states('sensor.outside_temperature') | float, 0.0] | max %}
+        {% set roomCompensation = states('sensor.boiler_flow_boost_coefficient') | float / 100 %}
+        {{
+          ((
+            curveMinT + deltaT ** curveExponent * coefficient
+          ) * roomCompensation) | round(1)
+        }}
