@@ -51,6 +51,13 @@ input_number:
     step: 1
     mode: box
     unit_of_measurement: "%"
+  boiler_temperature_cutoff_offset:    # was 0.1; nothing archived here used it
+    name: Boiler temperature cutoff offset
+    min: 0
+    max: 3
+    step: 0.1
+    mode: box
+    unit_of_measurement: "°C"
 
 input_button:
   hot_water_boost:

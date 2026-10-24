@@ -1,6 +1,6 @@
 # Old house boiler control (archived)
 
-Home Assistant config from the previous house, kept for reference for when there is a boiler to control again. The automations are no longer in Home Assistant.
+Home Assistant config from the previous house, kept for reference for when there is a boiler to control again. None of it is in Home Assistant any more.
 
 The boiler was a Vaillant ecoTEC plus 630, controlled over eBUS by [ebusd](https://github.com/john30/ebusd) through MQTT (`ebusd/bai/...`). `switch.central_heating`, `switch.hot_water` and the `sensor.ecotec_plus_630_*` sensors came from that setup.
 
@@ -20,6 +20,6 @@ The boiler was a Vaillant ecoTEC plus 630, controlled over eBUS by [ebusd](https
 
 ## Reusing it
 
-- `sensor.boiler_radiator_demand` and `input_number.boiler_min_radiator_demand` are still live in the current house.
+- `sensor.boiler_radiator_demand` and `input_number.boiler_min_radiator_demand` were kept: the current house still uses them.
 - Boiler central heating control has a device condition on a device that no longer exists. Replace it with a state condition on the new hot water switch.
 - The flow temperature payload is specific to ebusd and this boiler. A different boiler needs its own way of setting flow temperature.
