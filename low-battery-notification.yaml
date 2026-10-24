@@ -1,0 +1,254 @@
+blueprint:
+  name: Low battery notification (skips phones)
+  description: >
+    Regularly test all sensors with 'battery' device-class for crossing a certain battery level threshold and if so execute an action.
+    Supports exclusion by entities, devices, areas, and labels for flexible filtering.
+    Can also skip phones automatically: every battery sensor from the Home Assistant
+    Companion app, and any battery sensor with "phone" in its name.
+    Based on gmlupatelli's low battery blueprint
+    (https://github.com/gmlupatelli/blueprints_repo/tree/master/low_battery_notification).
+  domain: automation
+  source_url: https://raw.githubusercontent.com/t-d-d/ha-blueprints/refs/heads/master/low-battery-notification.yaml
+
+  # === BLUEPRINT INPUTS ===
+  # Configure when and how to check for low battery sensors
+  input:
+    threshold:
+      name: Battery warning level threshold
+      description: Battery sensors below threshold are assumed to be low-battery (as well as binary battery sensors with value 'on').
+      default: 20
+      selector:
+        number:
+          min: 5.0
+          max: 100.0
+          unit_of_measurement: '%'
+          mode: slider
+          step: 5.0
+
+    time:
+      name: Time to test on
+      description: Test is run at configured time
+      default: '10:00:00'
+      selector:
+        time: {}
+    
+    # === WEEKDAY SCHEDULE CONFIGURATION ===
+    # Select which days of the week to run the battery check
+    monday_enabled:
+      name: 'Monday'
+      description: 'Run test on Monday'
+      default: True
+      selector:
+        boolean:
+    tuesday_enabled:
+      name: Tuesday
+      description: 'Run test on Tuesday'
+      default: True
+      selector:
+        boolean:
+    wednesday_enabled:
+      name: Wednesday
+      description: 'Run test on Wednesday'
+      default: True
+      selector:
+        boolean:
+    thursday_enabled:
+      name: Thursday
+      description: 'Run test on Thursday'
+      default: True
+      selector:
+        boolean:
+    friday_enabled:
+      name: Friday
+      description: 'Run test on Friday'
+      default: True
+      selector:
+        boolean:
+    saturday_enabled:
+      name: Saturday
+      description: 'Run test on Saturday'
+      default: True
+      selector:
+        boolean:
+    sunday_enabled:
+      name: Sunday
+      description: 'Run test on Sunday'
+      default: True
+      selector:
+        boolean:
+
+    # === EXCLUSION CONFIGURATION ===
+    # Define which sensors to exclude from battery monitoring
+    exclude:
+      name: Excluded Sensors
+      description: Battery sensors (e.g. smartphone) to exclude from detection. Entities, devices, areas, and labels are supported!
+      default: {}
+      selector:
+        target:
+
+    exclude_phones:
+      name: Skip phones
+      description: >-
+        Skip battery sensors from the Home Assistant Companion app (mobile_app),
+        and any battery sensor with "phone" in its name. New phones are skipped
+        without adding them here.
+      default: true
+      selector:
+        boolean:
+
+    # === NOTIFICATION ACTIONS ===
+    # Define what happens when low battery sensors are detected
+    actions:
+      name: Actions
+      description: Notifications or similar to be run. {{sensors}} is replaced with a formated list of the names of sensors being low on battery. {{unformatted_sensors}} is also available as an unformatted list for advanced templating.
+      selector:
+        action:
+
+# === VARIABLES ===
+# Store user inputs as variables for easier reference throughout the automation
+variables:
+  # Weekday schedule variables
+  monday_enabled: !input 'monday_enabled'        # Run on Monday?
+  tuesday_enabled: !input 'tuesday_enabled'      # Run on Tuesday?  
+  wednesday_enabled: !input 'wednesday_enabled'  # Run on Wednesday?
+  thursday_enabled: !input 'thursday_enabled'    # Run on Thursday?
+  friday_enabled: !input 'friday_enabled'        # Run on Friday?
+  saturday_enabled: !input 'saturday_enabled'    # Run on Saturday?
+  sunday_enabled: !input 'sunday_enabled'        # Run on Sunday?
+
+  current_day: '{{ now().weekday() | int }}'     # Current day of week (0=Monday, 6=Sunday)
+
+  # Battery monitoring configuration
+  threshold: !input 'threshold'                  # Battery level threshold for warnings
+  exclude: !input 'exclude'                      # Exclusion input from blueprint
+  exclude_phones: !input 'exclude_phones'        # Skip Companion app and "phone" battery sensors?
+
+  # === BATTERY SENSOR DETECTION WITH EXCLUSION LOGIC ===
+  # Build a list of low battery sensors, excluding those specified by the user
+  # Exclusion supports entities, devices, areas, and labels for maximum flexibility
+  unformatted_sensors: >-
+    {% set result = namespace(sensors=[], excludedEntities=[]) %}
+
+    {# === ENTITY EXCLUSION === #}
+    {# Exclude specific entities directly by entity_id #}
+    {% if exclude.entity_id is defined %} 
+        {% set result.excludedEntities = result.excludedEntities + ([exclude.entity_id] if exclude.entity_id is string else exclude.entity_id) %}
+    {% endif %}
+
+    {# === DEVICE EXCLUSION === #}
+    {# Exclude all entities belonging to specified devices #}
+    {% if exclude.device_id is defined %}
+      {% if exclude.device_id is not list %}
+        {% set device_id_list = [exclude.device_id] %}
+      {% else %}
+        {% set device_id_list = exclude.device_id %}
+      {% endif %}
+      {% for device_id in device_id_list %}
+        {% set result.excludedEntities = result.excludedEntities + device_entities(device_id) %}
+      {% endfor %}
+    {% endif %}
+
+    {# === LABEL EXCLUSION === #}
+    {# Exclude entities, areas, and devices associated with specified labels #}
+    {% if exclude.label_id is defined %}
+      {% if exclude.label_id is not list %}
+        {% set label_id_list = [exclude.label_id] %}
+      {% else %}
+        {% set label_id_list = exclude.label_id %}
+      {% endif %}
+      {% for label_id in label_id_list %}
+        {% set result.excludedEntities = result.excludedEntities + label_entities(label_id) %}
+        {% for area in label_areas(label_id) %}
+          {% set result.excludedEntities = result.excludedEntities + area_entities(area) %}
+          {% for device in area_devices(area) %}
+              {% set result.excludedEntities = result.excludedEntities + device_entities(device) %}
+          {% endfor %}
+        {% endfor %}
+        {% for device in label_devices(label_id) %}
+            {% set result.excludedEntities = result.excludedEntities + device_entities(device) %}
+        {% endfor %}
+      {% endfor %}
+    {% endif %}
+
+    {# === AREA EXCLUSION === #}
+    {# Exclude all entities and devices in specified areas #}
+    {% if exclude.area_id is defined %}
+      {% if exclude.area_id is not list %}
+        {% set area_id_list = [exclude.area_id] %}
+      {% else %}
+        {% set area_id_list = exclude.area_id %}
+      {% endif %}
+      {% for area_id in area_id_list %}
+        {% set result.excludedEntities = result.excludedEntities + area_entities(area_id) %}
+        {% for device in area_devices(area_id) %}
+            {% set result.excludedEntities = result.excludedEntities + device_entities(device) %}
+        {% endfor %}
+      {% endfor %}
+    {% endif %}
+
+    {# === PHONE EXCLUSION === #}
+    {# Skip every entity from the Home Assistant Companion app #}
+    {% if exclude_phones %}
+      {% set result.excludedEntities = result.excludedEntities + integration_entities('mobile_app') %}
+    {% endif %}
+
+    {# === BATTERY SENSOR DETECTION === #}
+    {# Find all battery sensors below threshold, excluding those in exclusion list #}
+    {% for state in states.sensor if state.attributes.device_class is defined and state.attributes.device_class == 'battery' %}
+      {% if 0 <= state.state | int(-1) < threshold | int and not state.entity_id in result.excludedEntities
+            and not (exclude_phones and 'phone' in state.name | lower) %}
+        {% set result.sensors = result.sensors + [state.name ~ ' (' ~ state.state ~ ' %)'] %}
+      {% endif %}
+    {% endfor %}
+    {# Also check binary battery sensors that are 'on' (indicating low battery) #}
+    {% for state in states.binary_sensor if state.attributes.device_class is defined and state.attributes.device_class == 'battery' and state.state == 'on' %}
+      {% if not state.entity_id in result.excludedEntities
+            and not (exclude_phones and 'phone' in state.name | lower) %}
+        {% set result.sensors = result.sensors + [state.name] %}
+      {% endif %}
+    {% endfor %}
+    
+    {# Return the list of sensors for checking #}
+    {{ result.sensors }}
+
+  # Format sensors for notification template
+  sensors: >-
+    {{"- "}}{{unformatted_sensors|join('\n- ')}}
+
+# === AUTOMATION TRIGGERS ===
+# Run at the specified time each day
+trigger:
+  - platform: time
+    at: !input 'time'
+
+# === AUTOMATION CONDITIONS ===
+# Only run if it's a selected weekday and there are low battery sensors
+condition:
+  # Check if automation should run on the current weekday
+  - condition: template
+    value_template: >-
+        {{ 
+          (current_day == 0 and monday_enabled) or 
+          (current_day == 1 and tuesday_enabled) or 
+          (current_day == 2 and wednesday_enabled) or
+          (current_day == 3 and thursday_enabled) or 
+          (current_day == 4 and friday_enabled) or 
+          (current_day == 5 and saturday_enabled) or
+          (current_day == 6 and sunday_enabled)
+        }}
+
+  # Only proceed if there are actually low battery sensors to report
+  - condition: template
+    value_template: >-
+        {{ unformatted_sensors | length > 0 }}
+
+# === AUTOMATION ACTIONS ===
+# Execute user-defined actions when low battery sensors are detected
+action:
+  - choose: []
+    default: !input 'actions'
+  
+# === AUTOMATION CONFIGURATION ===
+# Prevent multiple instances and handle overflow gracefully
+mode: single
+max_exceeded: silent
