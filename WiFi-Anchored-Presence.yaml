@@ -96,8 +96,8 @@ variables:
     {{ states(batt_entity_id) | int(default=100) }}
     
   # TIMESTAMPS
-  wifi_time: "{{ as_timestamp(states[wifi_entity].last_changed) | default(0) }}"
-  gps_time: "{{ as_timestamp(states[gps_entity].last_updated) | default(0) }}"
+  wifi_time: "{{ as_timestamp(states[wifi_entity].last_changed, 0) }}"
+  gps_time: "{{ as_timestamp(states[gps_entity].last_updated, 0) }}"
 
   # DATA SNAPSHOT
   gps_lat: "{{ state_attr(gps_entity, 'latitude') | default(0) }}"
